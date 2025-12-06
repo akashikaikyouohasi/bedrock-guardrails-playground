@@ -173,38 +173,40 @@ async def main():
 anyio.run(main)
 ```
 
-### 例3: ツールを使うエージェント
+### 例3: ClaudeSDKClientでツールを使う（高度）
 
-```python
-import anyio
-from agent import BedrockAgentSDK
-
-async def main():
-    agent = BedrockAgentSDK()
-
-    # エージェントにファイル読み取りとbashコマンド実行を許可
-    tools = ["Read", "Bash"]
-
-    async for message in agent.chat_streaming(
-        "ファイル一覧を表示して、プロジェクト構造を分析して",
-        tools=tools
-    ):
-        print(message)
-
-anyio.run(main)
-```
-
-### 例4: ClaudeSDKClientの使用（高度）
+**注意**: `BedrockAgentSDK`は`tools`パラメータを受け取りますが、内部的には使用されません。ツール機能が必要な場合は、必ず`BedrockAgentSDKWithClient`を使用してください。
 
 ```python
 import anyio
 from agent import BedrockAgentSDKWithClient
 
 async def main():
-    async with BedrockAgentSDKWithClient() as agent:
+    # ツールを初期化時に指定
+    tools = ["Write"]
+
+    async with BedrockAgentSDKWithClient(tools=tools) as agent:
         async for message in agent.chat_with_client(
-            "Hello Worldを出力するPythonスクリプトを作成して",
-            tools=["Write"]
+            "Hello Worldを出力するPythonスクリプトを作成して"
+        ):
+            print(message)
+
+anyio.run(main)
+```
+
+### 例4: 複数のツールを使う
+
+```python
+import anyio
+from agent import BedrockAgentSDKWithClient
+
+async def main():
+    # ファイル読み取りとBashコマンド実行を許可
+    tools = ["Read", "Bash"]
+
+    async with BedrockAgentSDKWithClient(tools=tools) as agent:
+        async for message in agent.chat_with_client(
+            "README.mdを読んで、プロジェクト構造を分析して"
         ):
             print(message)
 
@@ -222,12 +224,18 @@ Claude Agent SDKは以下の組み込みツールを提供：
 - **Glob**: パターンでファイルを検索
 - **Grep**: ファイル内容を検索
 
-`tools`パラメータに渡すことでツールを有効化：
+**ツールの有効化方法:**
+
+`BedrockAgentSDKWithClient`を使用し、初期化時に`tools`を指定：
 
 ```python
 tools = ["Read", "Write", "Bash"]
-await agent.chat_streaming(prompt, tools=tools)
+async with BedrockAgentSDKWithClient(tools=tools) as agent:
+    async for message in agent.chat_with_client(prompt):
+        print(message)
 ```
+
+**重要**: `BedrockAgentSDK`の`chat_streaming()`メソッドは`tools`パラメータを受け取りますが、内部的には使用されません。ツール機能が必要な場合は、`BedrockAgentSDKWithClient`を使用してください。
 
 ## プロジェクト構造
 
@@ -313,17 +321,16 @@ Claude Agent SDKはClaude Code CLIを自動的にバンドルします。この�
 
 ## 含まれるサンプル
 
-プロジェクトには7つのサンプルシナリオが含まれます：
+プロジェクトには4つのサンプルシナリオが含まれます：
 
-1. **シンプルクエリ** - 基本的な一回限りのクエリ
-2. **ストリーミングチャット** - リアルタイムストリーミングレスポンス
-3. **非ストリーミングチャット** - 完全なレスポンスを収集
-4. **ツールを使うエージェント** - ReadとBashツールの使用
-5. **ClaudeSDKClient** - 高度なクライアント使用
-6. **コード実行** - コードを書いて実行するエージェント
-7. **ファイル読み取り** - プロジェクトファイルを読むエージェント
+1. **シンプルクエリ** (`example_simple_query`) - 基本的な一回限りのクエリ（ツールなし）
+2. **ストリーミングチャット** (`example_streaming_chat`) - リアルタイムストリーミングレスポンス（ツールなし）
+3. **非ストリーミングチャット** (`example_non_streaming_chat`) - 完全なレスポンスを収集（ツールなし）
+4. **ClaudeSDKClientでツールを使用** (`example_with_client`) - Writeツールを使ってファイルを作成
 
-`make run`ですべて実行できます！
+**注意**: ツール機能（Read、Write、Bash等）が必要な場合は、必ず`BedrockAgentSDKWithClient`を使用してください。`BedrockAgentSDK`はツールをサポートしていません。
+
+`make run`でサンプルを実行できます！
 
 ## 開発
 

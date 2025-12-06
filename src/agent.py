@@ -5,7 +5,7 @@ from typing import AsyncIterator, Optional
 from dotenv import load_dotenv
 import anyio
 from claude_agent_sdk import query, ClaudeSDKClient
-from claude_agent_sdk.types import Message
+from claude_agent_sdk.types import Message, ClaudeAgentOptions
 from langfuse import observe, get_client
 
 # Load environment variables
@@ -78,13 +78,13 @@ class BedrockAgentSDK:
     async def chat_streaming(
         self,
         prompt: str,
-        tools: Optional[list[str]] = None,
     ) -> AsyncIterator[str]:
         """Send a chat message and stream the response using Claude Agent SDK.
 
+        Note: This method does NOT support tools. Use BedrockAgentSDKWithClient for tool support.
+
         Args:
             prompt: User prompt
-            tools: List of allowed tools (e.g., ["Read", "Write", "Bash"])
 
         Yields:
             Messages from the agent
@@ -95,7 +95,6 @@ class BedrockAgentSDK:
             model="bedrock-claude",
             input=prompt,
             metadata={
-                "tools": tools,
                 "cwd": self.cwd,
             },
         )
@@ -130,13 +129,13 @@ class BedrockAgentSDK:
     async def chat(
         self,
         prompt: str,
-        tools: Optional[list[str]] = None,
     ) -> str:
         """Send a chat message and get the complete response.
 
+        Note: This method does NOT support tools. Use BedrockAgentSDKWithClient for tool support.
+
         Args:
             prompt: User prompt
-            tools: List of allowed tools
 
         Returns:
             Complete response text
@@ -146,7 +145,6 @@ class BedrockAgentSDK:
             model="bedrock-claude",
             input=prompt,
             metadata={
-                "tools": tools,
                 "cwd": self.cwd,
             },
         )
@@ -198,15 +196,18 @@ class BedrockAgentSDKWithClient:
         self,
         aws_region: Optional[str] = None,
         cwd: Optional[str] = None,
+        tools: Optional[list[str]] = None,
     ):
         """Initialize the Bedrock Agent SDK with ClaudeSDKClient.
 
         Args:
             aws_region: AWS region where Bedrock is available
             cwd: Working directory for the agent
+            tools: List of allowed tools (e.g., ["Read", "Write", "Bash"])
         """
         self.aws_region = aws_region or os.getenv("AWS_REGION", "us-east-1")
         self.cwd = cwd or os.getcwd()
+        self.tools = tools
 
         # Setup Bedrock environment
         setup_bedrock_env()
@@ -215,7 +216,12 @@ class BedrockAgentSDKWithClient:
 
     async def __aenter__(self):
         """Async context manager entry."""
-        self.client = ClaudeSDKClient(cwd=self.cwd)
+        # Create options with allowed tools and cwd
+        options = ClaudeAgentOptions(
+            allowed_tools=self.tools or [],
+            cwd=self.cwd,
+        )
+        self.client = ClaudeSDKClient(options=options)
         await self.client.__aenter__()
         return self
 
@@ -227,13 +233,11 @@ class BedrockAgentSDKWithClient:
     async def chat_with_client(
         self,
         prompt: str,
-        tools: Optional[list[str]] = None,
     ) -> AsyncIterator[str]:
         """Send a chat using ClaudeSDKClient for bidirectional conversation.
 
         Args:
             prompt: User prompt
-            tools: List of allowed tools
 
         Yields:
             Response messages
@@ -247,7 +251,7 @@ class BedrockAgentSDKWithClient:
             model="bedrock-claude",
             input=prompt,
             metadata={
-                "tools": tools,
+                "tools": self.tools,
                 "cwd": self.cwd,
             },
         )
@@ -255,10 +259,11 @@ class BedrockAgentSDKWithClient:
         full_response = ""
 
         try:
-            async for message in self.client.chat(
-                prompt=prompt,
-                tools=tools,
-            ):
+            # Send query to Claude
+            await self.client.query(prompt)
+
+            # Receive response messages
+            async for message in self.client.receive_response():
                 message_text = self._extract_message_text(message)
                 if message_text:  # 空文字列はスキップ
                     full_response += message_text
@@ -285,12 +290,13 @@ class BedrockAgentSDKWithClient:
 
 
 # Convenience function for simple usage
-async def simple_query(prompt: str, tools: Optional[list[str]] = None) -> str:
+async def simple_query(prompt: str) -> str:
     """Simple query function using Claude Agent SDK with Bedrock.
+
+    Note: This function does NOT support tools. Use BedrockAgentSDKWithClient for tool support.
 
     Args:
         prompt: User prompt
-        tools: List of allowed tools
 
     Returns:
         Complete response
