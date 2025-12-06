@@ -57,3 +57,12 @@ htmlcov/
 
 # Langfuse
 .langfuse/
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log
+.terraformrc
+terraform.rc
