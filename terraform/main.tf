@@ -14,6 +14,7 @@ provider "aws" {
 }
 
 # Bedrock Guardrail リソース
+# from: https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/bedrock_guardrail
 resource "aws_bedrock_guardrail" "main" {
   name                      = var.guardrail_name
   description              = var.guardrail_description
