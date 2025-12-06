@@ -4,7 +4,7 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = "~> 6"
     }
   }
 }
@@ -24,44 +24,70 @@ resource "aws_bedrock_guardrail" "main" {
   content_policy_config {
     # 性的コンテンツのフィルタリング
     filters_config {
+      input_action      = "BLOCK"
+      input_modalities  = ["TEXT"]
       input_strength  = var.content_filter_sexual_input_strength
+      output_action      = "BLOCK"
+      output_modalities  = ["TEXT"]
       output_strength = var.content_filter_sexual_output_strength
       type           = "SEXUAL"
     }
 
     # 暴力的コンテンツのフィルタリング
     filters_config {
+      input_action      = "BLOCK"
+      input_modalities  = ["TEXT"]
       input_strength  = var.content_filter_violence_input_strength
+      output_action      = "BLOCK"
+      output_modalities  = ["TEXT"]
       output_strength = var.content_filter_violence_output_strength
       type           = "VIOLENCE"
     }
 
     # ヘイトスピーチのフィルタリング
     filters_config {
+      input_action      = "BLOCK"
+      input_modalities  = ["TEXT"]
       input_strength  = var.content_filter_hate_input_strength
+      output_action      = "BLOCK"
+      output_modalities  = ["TEXT"]
       output_strength = var.content_filter_hate_output_strength
       type           = "HATE"
     }
 
     # 侮辱的コンテンツのフィルタリング
     filters_config {
+      input_action      = "BLOCK"
+      input_modalities  = ["TEXT"]
       input_strength  = var.content_filter_insults_input_strength
+      output_action      = "BLOCK"
+      output_modalities  = ["TEXT"]
       output_strength = var.content_filter_insults_output_strength
       type           = "INSULTS"
     }
 
     # 違法行為関連のフィルタリング
     filters_config {
+      input_action      = "BLOCK"
+      input_modalities  = ["TEXT"]
       input_strength  = var.content_filter_misconduct_input_strength
+      output_action      = "BLOCK"
+      output_modalities  = ["TEXT"]
       output_strength = var.content_filter_misconduct_output_strength
       type           = "MISCONDUCT"
     }
 
     # プロンプトインジェクション対策
     filters_config {
+      input_action      = "BLOCK"
+      input_modalities  = ["TEXT"]
       input_strength  = var.content_filter_prompt_attack_input_strength
       output_strength = var.content_filter_prompt_attack_output_strength
       type           = "PROMPT_ATTACK"
+    }
+
+    tier_config {
+      tier_name = "STANDARD"
     }
   }
 
@@ -151,6 +177,11 @@ resource "aws_bedrock_guardrail" "main" {
         }
       }
     }
+  }
+
+  # クロスリージョン推論設定
+  cross_region_config {
+    guardrail_profile_identifier = "arn:aws:bedrock:us-west-2:206863353204:guardrail-profile/us.guardrail.v1:0"
   }
 
   tags = var.tags

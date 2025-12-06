@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region where Bedrock Guardrails will be created"
   type        = string
-  default     = "us-east-1"
+  default     = "us-west-2"
 }
 
 variable "guardrail_name" {
