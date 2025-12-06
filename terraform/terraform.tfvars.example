@@ -1,0 +1,73 @@
+# AWS Region
+aws_region = "us-east-1"
+
+# Guardrail Basic Configuration
+guardrail_name        = "my-bedrock-guardrail"
+guardrail_description = "Custom Bedrock Guardrail for testing"
+
+# Custom Messages
+blocked_input_messaging   = "申し訳ありません。この入力は処理できません。"
+blocked_outputs_messaging = "申し訳ありません。このコンテンツは表示できません。"
+
+# Content Filter Strengths (NONE, LOW, MEDIUM, HIGH)
+content_filter_sexual_input_strength  = "HIGH"
+content_filter_sexual_output_strength = "HIGH"
+
+content_filter_violence_input_strength  = "MEDIUM"
+content_filter_violence_output_strength = "MEDIUM"
+
+content_filter_hate_input_strength  = "HIGH"
+content_filter_hate_output_strength = "HIGH"
+
+content_filter_insults_input_strength  = "MEDIUM"
+content_filter_insults_output_strength = "MEDIUM"
+
+content_filter_misconduct_input_strength  = "HIGH"
+content_filter_misconduct_output_strength = "HIGH"
+
+content_filter_prompt_attack_input_strength  = "HIGH"
+content_filter_prompt_attack_output_strength = "NONE"
+
+# PII Actions (BLOCK or ANONYMIZE)
+pii_action_email       = "ANONYMIZE"
+pii_action_phone       = "ANONYMIZE"
+pii_action_credit_card = "BLOCK"
+pii_action_ssn         = "BLOCK"
+pii_action_name        = "ANONYMIZE"
+pii_action_address     = "ANONYMIZE"
+
+# Custom PII Patterns
+custom_pii_regexes = [
+  {
+    name        = "japanese_my_number"
+    description = "日本のマイナンバー（12桁）"
+    pattern     = "\\b\\d{4}-\\d{4}-\\d{4}\\b"
+    action      = "BLOCK"
+  }
+]
+
+# Denied Topics
+denied_topics = [
+  {
+    name       = "investment_advice"
+    definition = "金融投資に関するアドバイスや推奨"
+    examples = [
+      "この株を買うべきですか？",
+      "おすすめの投資先を教えてください"
+    ]
+  }
+]
+
+# Word Filters
+blocked_words       = []
+managed_word_lists  = ["PROFANITY"]
+
+# Version
+guardrail_version_description = "Initial version"
+
+# Tags
+tags = {
+  Project     = "bedrock-guardrails-playground"
+  Environment = "development"
+  ManagedBy   = "terraform"
+}
