@@ -5,7 +5,6 @@ Terraformでデプロイした Bedrock Guardrails を、**Claude Agent SDK** と
 ## 📁 ファイル一覧
 
 - `streaming_example.py` - **ApplyGuardrail API を使用したリアルタイムチェック実装**
-- `streaming_example_old.py` - 以前のバージョン（参考用）
 
 ## 🎯 この実装の特徴
 
