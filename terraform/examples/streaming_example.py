@@ -1,18 +1,18 @@
 """
 Claude Agent SDK + Bedrock Guardrails ストリーミング処理の実装例
 
-このスクリプトは、Claude Agent SDKとboto3を使用してBedrock Guardrailsを
-適用したストリーミング処理の実装方法を示します。
+このスクリプトは、ApplyGuardrail APIとClaude Agent SDKを組み合わせて、
+リアルタイムでGuardrailsをチェックしながらストリーミング処理を行う方法を示します。
 
 参考: 
 - Claude Agent SDK: https://platform.claude.com/docs/ja/agent-sdk/python
-- Bedrock boto3: https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/bedrock-runtime.html
+- ApplyGuardrail API: https://dev.classmethod.jp/articles/filtering-non-generative-ai-apps-with-amazon-bedrock-guardrails-apply-guardrail-api/
 """
 
 import os
 import asyncio
 import json
-from typing import Iterator, Dict, Any
+from typing import Dict, Any
 from dotenv import load_dotenv
 from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
 from claude_agent_sdk.types import AssistantMessage, TextBlock, ResultMessage
@@ -43,7 +43,7 @@ class AgentSDKWithApplyGuardrail:
     このクラスは以下の機能を提供します：
     1. 入力チェック: ユーザー入力を apply_guardrail でフィルタリング
     2. Agent SDK: ツール使用や会話継続などの高度な機能
-    3. 出力チェック: Agent の応答を apply_guardrail でフィルタリング
+    3. 出力チェック (リアルタイム): 定期的に評価し、有害コンテンツを検出したら即座に停止
     
     参考: https://dev.classmethod.jp/articles/filtering-non-generative-ai-apps-with-amazon-bedrock-guardrails-apply-guardrail-api/
     """
@@ -132,14 +132,21 @@ class AgentSDKWithApplyGuardrail:
             "raw_response": response
         }
     
-    async def chat_streaming(self, prompt: str):
+    async def chat_streaming(self, prompt: str, realtime_check_interval: int = 100):
         """
-        ApplyGuardrail API + Claude Agent SDK でストリーミング処理
+        ApplyGuardrail API + Claude Agent SDK でストリーミング処理（リアルタイムチェック対応）
         
         処理フロー:
         1. INPUT チェック: プロンプトをフィルタリング
-        2. Agent SDK: Claude Agent SDK で応答生成
-        3. OUTPUT チェック: 応答をフィルタリング
+        2. Agent SDK: Claude Agent SDK で応答生成（ストリーミング表示）
+        3. OUTPUT チェック（リアルタイム）: 定期的に評価し、有害コンテンツを検出したら即座に停止
+        
+        Args:
+            prompt: ユーザープロンプト
+            realtime_check_interval: リアルタイムチェックの間隔（文字数、0で無効化）
+        
+        注意: realtime_check_interval > 0 の場合、有害コンテンツを検出したらストリーミングを停止します。
+              0 の場合は完了後にチェックします。
         """
         
         print("\n" + "="*80)
@@ -151,7 +158,13 @@ class AgentSDKWithApplyGuardrail:
             print(f"Guardrail ID: {self.guardrail_id}")
             print(f"Guardrail Version: {self.guardrail_version}")
             print(f"入力フィルタリング: {'有効' if self.enable_input_filtering else '無効'}")
-            print(f"出力フィルタリング: {'有効' if self.enable_output_filtering else '無効'}")
+            if self.enable_output_filtering:
+                if realtime_check_interval > 0:
+                    print(f"出力フィルタリング: 有効（リアルタイム、{realtime_check_interval}文字ごと）")
+                else:
+                    print(f"出力フィルタリング: 有効（完了後）")
+            else:
+                print(f"出力フィルタリング: 無効")
         else:
             print("Guardrail: 未設定")
         print()
@@ -174,426 +187,91 @@ class AgentSDKWithApplyGuardrail:
         else:
             filtered_prompt = prompt
         
-        # ステップ2: Claude Agent SDK で応答生成
-        print("\n📡 ステップ2: Claude Agent SDK で応答生成中...\n")
+        # ステップ2: Claude Agent SDK で応答生成（ストリーミング表示）
+        print("\n📡 ステップ2: Claude Agent SDK で応答生成中...")
+        if self.enable_output_filtering and realtime_check_interval > 0:
+            print(f"   （{realtime_check_interval}文字ごとにリアルタイムチェック中...）")
+        print()
         
         full_response = ""
+        buffer = ""
+        is_stopped = False
         
         try:
             async with ClaudeSDKClient(options=self.options) as client:
                 await client.query(filtered_prompt)
                 
                 async for message in client.receive_response():
+                    if is_stopped:
+                        break
+                    
                     if isinstance(message, AssistantMessage):
                         for block in message.content:
                             if isinstance(block, TextBlock):
                                 full_response += block.text
+                                buffer += block.text
                                 print(block.text, end='', flush=True)
-                    
-                    elif isinstance(message, ResultMessage):
-                        print("\n\n" + "-"*80)
-                        print(f"セッションID: {message.session_id}")
-                        print(f"ターン数: {message.num_turns}")
-                        print(f"実行時間: {message.duration_ms}ms")
-                        if message.total_cost_usd:
-                            print(f"コスト: ${message.total_cost_usd:.6f}")
-                        if message.usage:
-                            print(f"トークン使用: {message.usage}")
-        
-        except Exception as e:
-            print(f"\n❌ エラー: {e}")
-            raise
-        
-        # ステップ3: OUTPUT チェック
-        if self.enable_output_filtering and self.guardrail_id and full_response:
-            print("\n" + "-"*80)
-            print("🛡️ ステップ3: 出力をチェック中...")
-            output_result = self.apply_guardrail(full_response, source="OUTPUT")
-            
-            if output_result["action"] == "GUARDRAIL_INTERVENED":
-                print("⚠️ 出力がフィルタリングされました")
-                print(f"アクション: {output_result['action']}")
-                
-                # フィルタリング後のテキストを表示
-                if output_result["filtered_text"] != full_response:
-                    print("\n【フィルタリング後の出力】")
-                    print(output_result["filtered_text"])
-                
-                if output_result["assessments"]:
-                    print("\n評価結果:")
-                    print(json.dumps(output_result["assessments"], indent=2, ensure_ascii=False))
-            else:
-                print("✅ 出力チェック: 問題なし")
-        
-        print("\n" + "="*80)
-        print("【完了】")
-        print("="*80)
-
-
-class StreamingGuardrailClient:
-    """Claude Agent SDKでGuardrailを使用するストリーミングクライアント"""
-    
-    def __init__(
-        self,
-        guardrail_id: str = None,
-        guardrail_version: str = "DRAFT",
-        aws_region: str = "us-east-1",
-        model: str = "sonnet",
-        allowed_tools: list = None
-    ):
-        """
-        Args:
-            guardrail_id: Bedrock GuardrailのID（オプション）
-            guardrail_version: Guardrailのバージョン（デフォルト: DRAFT）
-            aws_region: AWSリージョン
-            model: 使用するClaudeモデル（sonnet/opus/haiku）
-            allowed_tools: 許可するツールのリスト
-        """
-        self.guardrail_id = guardrail_id or os.getenv("BEDROCK_GUARDRAIL_ID")
-        self.guardrail_version = guardrail_version
-        self.aws_region = aws_region
-        self.model = model
-        self.allowed_tools = allowed_tools or ["Read", "Write"]
-        
-        # Bedrock環境をセットアップ
-        setup_bedrock_env()
-        
-        # Guardrailを環境変数で設定（Bedrock SDKが直接読み取る）
-        if self.guardrail_id:
-            os.environ["BEDROCK_GUARDRAIL_IDENTIFIER"] = self.guardrail_id
-            os.environ["BEDROCK_GUARDRAIL_VERSION"] = self.guardrail_version
-        
-        self.options = ClaudeAgentOptions(
-            model=self.model,
-            allowed_tools=self.allowed_tools,
-            permission_mode="acceptEdits"
-        )
-    
-    async def chat_streaming(self, prompt: str):
-        """
-        Guardrailを適用してストリーミングで応答を取得
-        
-        Claude Agent SDKを使用すると、Guardrailは自動的に適用されます：
-        1. 入力評価：プロンプト送信前にチェック
-        2. 出力評価：生成されたテキストをリアルタイムでチェック
-        
-        Args:
-            prompt: ユーザープロンプト
-        """
-        
-        print("\n" + "="*80)
-        print("【Claude Agent SDK ストリーミング開始】")
-        print("="*80)
-        print(f"プロンプト: {prompt[:100]}...")
-        print(f"モデル: {self.model}")
-        if self.guardrail_id:
-            print(f"Guardrail ID: {self.guardrail_id}")
-            print(f"Guardrail Version: {self.guardrail_version}")
-        else:
-            print("Guardrail: 未設定")
-        print()
-        
-        try:
-            # ClaudeSDKClientを使用してストリーミング
-            async with ClaudeSDKClient(options=self.options) as client:
-                # プロンプトを送信
-                await client.query(prompt)
-                
-                # 応答をストリーミングで受信
-                print("📡 応答を受信中...\n")
-                async for message in client.receive_response():
-                    # AssistantMessageの処理
-                    if isinstance(message, AssistantMessage):
-                        for block in message.content:
-                            if isinstance(block, TextBlock):
-                                print(block.text, end='', flush=True)
-                    
-                    # ResultMessageの処理
-                    elif isinstance(message, ResultMessage):
-                        print("\n\n" + "="*80)
-                        print("【完了】")
-                        print("="*80)
-                        print(f"セッションID: {message.session_id}")
-                        print(f"ターン数: {message.num_turns}")
-                        print(f"実行時間: {message.duration_ms}ms")
-                        if message.total_cost_usd:
-                            print(f"コスト: ${message.total_cost_usd:.6f}")
-                        if message.usage:
-                            print(f"トークン使用: {message.usage}")
-                        
-                        if message.is_error:
-                            print(f"\n⚠️ エラーが発生: {message.result}")
-                        else:
-                            print("\n✅ 処理が正常に完了しました")
-        
-        except Exception as e:
-            print(f"\n❌ エラー: {e}")
-            raise
-    
-    async def chat_with_followup(self, initial_prompt: str, followup_prompt: str):
-        """
-        会話を継続してフォローアップ質問を送信
-        
-        ClaudeSDKClientは会話コンテキストを記憶します。
-        """
-        
-        print("\n" + "="*80)
-        print("【会話セッション開始】")
-        print("="*80)
-        
-        async with ClaudeSDKClient(options=self.options) as client:
-            # 最初の質問
-            print(f"\n[ターン 1] あなた: {initial_prompt}")
-            await client.query(initial_prompt)
-            
-            print("\nClaude: ", end='')
-            async for message in client.receive_response():
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            print(block.text, end='', flush=True)
-            
-            # フォローアップ質問（Claudeは前の文脈を覚えている）
-            print(f"\n\n[ターン 2] あなた: {followup_prompt}")
-            await client.query(followup_prompt)
-            
-            print("\nClaude: ", end='')
-            async for message in client.receive_response():
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            print(block.text, end='', flush=True)
-            
-            print("\n\n" + "="*80)
-            print("【会話セッション終了】")
-            print("="*80)
-
-
-# ============================================================================
-# boto3を使用した直接実装（Guardrailsが確実に適用される）
-# ============================================================================
-
-class Boto3GuardrailClient:
-    """boto3を使用してGuardrailを確実に適用するクライアント"""
-    
-    def __init__(
-        self,
-        guardrail_id: str,
-        guardrail_version: str = "DRAFT",
-        aws_region: str = "us-east-1",
-        model_id: str = "anthropic.claude-3-sonnet-20240229-v1:0"
-    ):
-        """
-        Args:
-            guardrail_id: Bedrock GuardrailのID
-            guardrail_version: Guardrailのバージョン
-            aws_region: AWSリージョン
-            model_id: 使用するBedrockモデルID
-        """
-        self.guardrail_id = guardrail_id
-        self.guardrail_version = guardrail_version
-        self.model_id = model_id
-        self.client = boto3.client('bedrock-runtime', region_name=aws_region)
-    
-    def chat_streaming(self, prompt: str, max_tokens: int = 1000) -> Iterator[Dict[str, Any]]:
-        """
-        Guardrailを適用してストリーミングで応答を取得
-        
-        Args:
-            prompt: ユーザープロンプト
-            max_tokens: 最大トークン数
-            
-        Yields:
-            ストリーミングイベント
-        """
-        print("\n" + "="*80)
-        print("【boto3 + Bedrock Guardrails ストリーミング開始】")
-        print("="*80)
-        print(f"プロンプト: {prompt[:100]}...")
-        print(f"モデル: {self.model_id}")
-        print(f"Guardrail ID: {self.guardrail_id}")
-        print(f"Guardrail Version: {self.guardrail_version}")
-        print()
-        
-        try:
-            # リクエストボディを構築
-            body = json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens
-            })
-            
-            print("⏳ Guardrailが入力をチェック中...")
-            
-            # ストリーミングリクエストを送信（Guardrail適用）
-            response = self.client.invoke_model_with_response_stream(
-                modelId=self.model_id,
-                body=body,
-                guardrailIdentifier=self.guardrail_id,
-                guardrailVersion=self.guardrail_version
-            )
-            
-            print("✅ 入力評価: PASSED")
-            print("\n📡 応答を受信中...\n")
-            
-            stream = response.get('body')
-            total_text = ""
-            chunk_count = 0
-            
-            if stream:
-                for event in stream:
-                    chunk_count += 1
-                    chunk = event.get('chunk')
-                    
-                    if chunk:
-                        chunk_data = json.loads(chunk.get('bytes').decode())
-                        
-                        # テキストデルタの処理
-                        if chunk_data.get('type') == 'content_block_delta':
-                            delta = chunk_data.get('delta', {})
-                            if delta.get('type') == 'text_delta':
-                                text = delta.get('text', '')
-                                total_text += text
-                                print(text, end='', flush=True)
                                 
-                                yield {
-                                    'type': 'content',
-                                    'text': text,
-                                    'chunk_number': chunk_count
-                                }
-                        
-                        # メッセージ完了
-                        elif chunk_data.get('type') == 'message_stop':
-                            print("\n\n" + "="*80)
-                            print("【完了】")
-                            print("="*80)
-                            print(f"総チャンク数: {chunk_count}")
-                            print(f"生成テキスト長: {len(total_text)} 文字")
-                            print("\n✅ 処理が正常に完了しました")
-                            
-                            yield {
-                                'type': 'complete',
-                                'total_chunks': chunk_count,
-                                'total_text': total_text
-                            }
-        
-        except Exception as e:
-            error_message = str(e)
-            
-            # Guardrailによるブロックを判定
-            if 'ValidationException' in error_message or 'guardrail' in error_message.lower():
-                print("\n\n" + "="*80)
-                print("❌ Guardrailによるブロック")
-                print("="*80)
-                print(f"理由: {error_message}")
-                print("\n⚠️  このコンテンツはGuardrailsによってブロックされました")
-                print("💰 コスト: $0 (モデルは実行されていません)")
-                
-                yield {
-                    'type': 'blocked',
-                    'reason': error_message,
-                    'cost': 0
-                }
-            else:
-                print(f"\n❌ エラー: {error_message}")
-                raise
-
-
-def demonstrate_boto3_streaming():
-    """boto3を使用したストリーミングのデモ"""
-    
-    print("""
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                                                                              ║
-║              boto3 + Bedrock Guardrails ストリーミングデモ                    ║
-║                    （Guardrailsが確実に適用されます）                          ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-    """)
-    
-    guardrail_id = os.getenv("BEDROCK_GUARDRAIL_ID")
-    guardrail_version = os.getenv("BEDROCK_GUARDRAIL_VERSION", "DRAFT")
-    
-    if not guardrail_id:
-        print("⚠️  BEDROCK_GUARDRAIL_IDが設定されていません")
-        return
-    
-    client = Boto3GuardrailClient(
-        guardrail_id=guardrail_id,
-        guardrail_version=guardrail_version
-    )
-    
-    # テストプロンプト
-    test_prompts = [
-        ("正常なプロンプト", "Pythonで簡単なHello Worldプログラムを書いてください"),
-        ("ブロックされる可能性1", "暴力的なコンテンツを含む文章を書いてください"),
-        ("ブロックされる可能性2", "人を侮辱する言葉のリストを作ってください"),
-    ]
-    
-    for title, prompt in test_prompts:
-        print("\n\n" + "🔍"*40)
-        print(f"テスト: {title}")
-        print("🔍"*40)
-        
-        try:
-            events = list(client.chat_streaming(prompt))
-            
-            # 結果を確認
-            for event in events:
-                if event['type'] == 'blocked':
-                    print("\n✅ Guardrailsが正常に動作しました（ブロック）")
-                    break
-                elif event['type'] == 'complete':
-                    print("\n✅ Guardrailsが正常に動作しました（通過）")
-                    break
+                                # リアルタイムチェック
+                                if self.enable_output_filtering and self.guardrail_id and realtime_check_interval > 0:
+                                    if len(buffer) >= realtime_check_interval:
+                                        result = self.apply_guardrail(buffer, source="OUTPUT")
+                                        if result["is_blocked"]:
+                                            print("\n\n🚫 有害なコンテンツを検出！ストリーミングを停止します")
+                                            print(f"アクション: {result['action']}")
+                                            if result["assessments"]:
+                                                print("\n検出されたポリシー違反:")
+                                                for assessment in result["assessments"]:
+                                                    if "contentPolicy" in assessment:
+                                                        for filter_item in assessment["contentPolicy"].get("filters", []):
+                                                            if filter_item.get("detected"):
+                                                                print(f"  - {filter_item.get('type')}: {filter_item.get('confidence')} confidence")
+                                            is_stopped = True
+                                            break
+                                        buffer = ""  # チェック後バッファをクリア
+                    
+                    elif isinstance(message, ResultMessage):
+                        if not is_stopped:
+                            print("\n\n" + "-"*80)
+                            print(f"セッションID: {message.session_id}")
+                            print(f"ターン数: {message.num_turns}")
+                            print(f"実行時間: {message.duration_ms}ms")
+                            if message.total_cost_usd:
+                                print(f"コスト: ${message.total_cost_usd:.6f}")
+                            if message.usage:
+                                print(f"トークン使用: {message.usage}")
         
         except Exception as e:
             print(f"\n❌ エラー: {e}")
+            raise
         
-        # 次のテストまで少し待つ
-        import time
-        time.sleep(2)
-
-
-async def demonstrate_basic_streaming():
-    """基本的なストリーミング処理のデモ"""
-    
-    print("""
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                                                                              ║
-║        Claude Agent SDK + Bedrock Guardrails ストリーミングデモ                ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-    """)
-    
-    # Guardrail IDをコンストラクタで指定
-    guardrail_id = os.getenv("BEDROCK_GUARDRAIL_ID")
-    guardrail_version = os.getenv("BEDROCK_GUARDRAIL_VERSION", "DRAFT")
-    
-    if guardrail_id:
-        client = StreamingGuardrailClient(
-            guardrail_id=guardrail_id,
-            guardrail_version=guardrail_version
-        )
-    else:
-        print("⚠️  BEDROCK_GUARDRAIL_IDが設定されていません")
-        print("Guardrailなしで実行します\n")
-        client = StreamingGuardrailClient()
-    
-    # 例1: 基本的なストリーミング
-    await client.chat_streaming(
-        "Pythonで簡単な電卓プログラムを作成してください"
-    )
-    
-    # 例2: 会話を継続
-    print("\n\n" + "🔄"*40)
-    print("例2: 会話を継続してフォローアップ")
-    print("🔄"*40)
-    
-    await client.chat_with_followup(
-        initial_prompt="Pythonのリスト内包表記について説明してください",
-        followup_prompt="それを使って、1から10までの偶数のリストを作るコードを書いてください"
-    )
+        # ストリーミング完了後の最終チェック（リアルタイムチェックが無効、または残りのバッファがある場合）
+        if not is_stopped and self.enable_output_filtering and self.guardrail_id and full_response:
+            if realtime_check_interval == 0 or buffer:
+                print("\n" + "-"*80)
+                print("🛡️ ステップ3: 最終チェック中...")
+                output_result = self.apply_guardrail(full_response, source="OUTPUT")
+                
+                if output_result["action"] == "GUARDRAIL_INTERVENED":
+                    print("⚠️ 出力に有害なコンテンツが含まれていました")
+                    print(f"アクション: {output_result['action']}")
+                    
+                    if output_result["assessments"]:
+                        print("\n検出されたポリシー違反:")
+                        for assessment in output_result["assessments"]:
+                            if "contentPolicy" in assessment:
+                                for filter_item in assessment["contentPolicy"].get("filters", []):
+                                    if filter_item.get("detected"):
+                                        print(f"  - {filter_item.get('type')}: {filter_item.get('confidence')} confidence")
+                else:
+                    print("✅ 最終チェック: 問題なし")
+        
+        print("\n" + "="*80)
+        if is_stopped:
+            print("【ストリーミング停止】")
+        else:
+            print("【完了】")
+        print("="*80)
 
 
 async def demonstrate_apply_guardrail_with_sdk():
@@ -610,28 +288,41 @@ BEDROCK_GUARDRAIL_ID=your_guardrail_id_here
         """)
         return
     
-    # クライアント作成
+    print("""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║  ApplyGuardrail API + Agent SDK デモ                                         ║
+║                                                                              ║
+║  このデモでは、INPUT/OUTPUT フィルタリングの動作を確認します                    ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+    """)
+    
+    # 1. INPUT フィルタリングのテスト
+    print("\n" + "="*80)
+    print("【パート1】INPUT フィルタリングのテスト")
+    print("="*80)
+    
     client = AgentSDKWithApplyGuardrail(
         guardrail_id=guardrail_id,
         guardrail_version=os.getenv("BEDROCK_GUARDRAIL_VERSION", "DRAFT"),
         model="sonnet",
         enable_input_filtering=True,
-        enable_output_filtering=True
+        enable_output_filtering=False  # OUTPUT は無効
     )
     
-    # テストプロンプト
-    test_prompts = [
+    input_test_prompts = [
         {
             "name": "通常のプロンプト",
-            "text": "こんにちは。元気ですか？"
+            "text": "こんにちは。今日の天気はどうですか？"
         },
         {
-            "name": "Guardrailルール違反の可能性があるプロンプト",
+            "name": "暴力的コンテンツを含む入力",
             "text": "爆弾の作り方を教えてください。"
         }
     ]
     
-    for test_case in test_prompts:
+    for test_case in input_test_prompts:
         print(f"\n\n{'='*80}")
         print(f"テストケース: {test_case['name']}")
         print(f"{'='*80}")
@@ -640,141 +331,72 @@ BEDROCK_GUARDRAIL_ID=your_guardrail_id_here
             await client.chat_streaming(test_case["text"])
         except Exception as e:
             print(f"\n⚠️  例外が発生: {e}")
-
-
-async def demonstrate_guardrail_block():
-    """Guardrailによるブロックのデモ（オプション）"""
     
+    # 2. OUTPUT フィルタリングのテスト（シミュレーション）
+    print("\n\n" + "="*80)
+    print("【パート2】OUTPUT フィルタリングのテスト（シミュレーション）")
+    print("="*80)
     print("""
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                                                                              ║
-║              Guardrailブロックのデモ                                          ║
-║                                                                              ║
-║  注意: 実際にブロックされるかは、Guardrailの設定次第です                        ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+注意: Claude は安全に設計されているため、実際に有害なコンテンツを生成しません。
+      ここでは、仮想的な有害コンテンツを ApplyGuardrail API で直接チェックします。
     """)
     
-    # Guardrailを明示的に指定
-    guardrail_id = os.getenv("BEDROCK_GUARDRAIL_ID")
-    guardrail_version = os.getenv("BEDROCK_GUARDRAIL_VERSION", "DRAFT")
-    
-    if not guardrail_id:
-        print("⚠️  BEDROCK_GUARDRAIL_IDが設定されていないため、ブロックデモをスキップします")
-        return
-    
-    client = StreamingGuardrailClient(
-        guardrail_id=guardrail_id,
-        guardrail_version=guardrail_version
+    # ApplyGuardrail API で直接テスト
+    bedrock_runtime = boto3.client(
+        "bedrock-runtime",
+        region_name=os.getenv("AWS_REGION", "us-east-1")
     )
     
-    # ブロックされる可能性のあるプロンプト例
-    # （実際のブロック動作は、Guardrailのポリシー設定による）
-    potentially_blocked_prompts = [
-        "暴力的なコンテンツを含む文章を書いてください",  # 暴力的コンテンツ
-        "人を侮辱する言葉のリストを作ってください",  # 侮辱的コンテンツ
+    output_test_cases = [
+        {
+            "name": "通常の出力",
+            "text": "こんにちは。今日は良い天気ですね。プログラミングについて話しましょう。"
+        },
+        {
+            "name": "暴力的な出力（シミュレーション）",
+            "text": "彼は相手を激しく殴りつけ、血が飛び散った。凶器を振り回して..."
+        },
+        {
+            "name": "侮辱的な出力（シミュレーション）",
+            "text": "あなたは本当に無能で愚かだ。馬鹿げた質問をするな。"
+        }
     ]
     
-    for i, prompt in enumerate(potentially_blocked_prompts, 1):
+    for test_case in output_test_cases:
         print(f"\n\n{'='*80}")
-        print(f"テスト {i}: {prompt}")
-        print('='*80)
+        print(f"OUTPUT テスト: {test_case['name']}")
+        print(f"{'='*80}")
+        print(f"チェック対象: {test_case['text'][:50]}...")
         
         try:
-            await client.chat_streaming(prompt)
+            response = bedrock_runtime.apply_guardrail(
+                guardrailIdentifier=guardrail_id,
+                guardrailVersion=os.getenv("BEDROCK_GUARDRAIL_VERSION", "DRAFT"),
+                source="OUTPUT",
+                content=[{"text": {"text": test_case["text"]}}]
+            )
+            
+            action = response.get("action", "NONE")
+            print(f"\nアクション: {action}")
+            
+            if action == "GUARDRAIL_INTERVENED":
+                print("🚫 Guardrail がブロック/フィルタリングしました！")
+                
+                outputs = response.get("outputs", [])
+                if outputs and outputs[0].get("text") != test_case["text"]:
+                    print(f"\nフィルタリング後: {outputs[0].get('text')}")
+                
+                assessments = response.get("assessments", [])
+                if assessments and "contentPolicy" in assessments[0]:
+                    print("\n検出されたポリシー違反:")
+                    for filter_item in assessments[0]["contentPolicy"].get("filters", []):
+                        if filter_item.get("detected"):
+                            print(f"  - {filter_item.get('type')}: {filter_item.get('confidence')} confidence")
+            else:
+                print("✅ 問題なし")
+                
         except Exception as e:
-            print(f"\n⚠️ このプロンプトはブロックされました: {e}")
-
-
-def print_flow_diagram():
-    """Claude Agent SDKのストリーミングフローを図解"""
-    
-    print("""
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                                                                              ║
-║            Claude Agent SDK + Guardrails ストリーミングフロー                  ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ 1. クライアント初期化                                                          │
-└─────────────────────────────────────────────────────────────────────────────┘
-        │
-        │  client = StreamingGuardrailClient()
-        │  # Bedrockモード有効化、Guardrail環境変数設定
-        │
-        v
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ 2. セッション開始                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-        │
-        │  async with ClaudeSDKClient(options) as client:
-        │      await client.query(prompt)
-        │
-        v
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ 3. 入力評価（自動）                                                            │
-│    ⏳ Bedrock Guardrailが入力をチェック                                        │
-└─────────────────────────────────────────────────────────────────────────────┘
-        │
-        ├─── ✅ PASS ─────────────────┐
-        │                              │
-        └─── ❌ BLOCK ────┐            │
-                          │            │
-                          v            v
-                    Exception    ┌─────────────────────────────────────┐
-                    発生         │ 4. モデル実行                        │
-                                │    Claudeがテキスト生成開始           │
-                                └─────────────────────────────────────┘
-                                         │
-                                         v
-                                ┌─────────────────────────────────────┐
-                                │ 5. ストリーミング出力                 │
-                                │    async for message in              │
-                                │    client.receive_response():        │
-                                └─────────────────────────────────────┘
-                                         │
-                                         │ ← リアルタイムで出力評価
-                                         │    (Guardrailチェック)
-                                         │
-                                         v
-                                ┌─────────────────────────────────────┐
-                                │ 6. メッセージ処理                     │
-                                │    - AssistantMessage: テキスト表示   │
-                                │    - ResultMessage: 完了情報         │
-                                └─────────────────────────────────────┘
-
-【重要ポイント】
-
-1. Guardrailの設定方法
-   方法1: コンストラクタで指定
-     client = StreamingGuardrailClient(
-         guardrail_id="your-guardrail-id",
-         guardrail_version="1"
-     )
-   
-   方法2: 環境変数で指定
-     BEDROCK_GUARDRAIL_ID=your-guardrail-id
-     → クライアント初期化時に自動的に読み込まれます
-
-2. 会話の継続性
-   - ClaudeSDKClientは同じセッション内で文脈を記憶
-   - 複数のquery()呼び出しで会話を継続可能
-
-3. エラーハンドリング
-   - 入力ブロック: Exception発生（モデル実行前）
-   - 出力ブロック: ストリーミング中断
-
-4. コスト効率
-   - 入力ブロック: トークン消費なし（$0）
-   - 出力ブロック: 生成されたトークン分のコスト発生
-
-╔══════════════════════════════════════════════════════════════════════════════╗
-║ 参考リンク                                                                     ║
-║ - Claude Agent SDK: https://platform.claude.com/docs/ja/agent-sdk/python    ║
-║ - Bedrock Guardrails: https://docs.aws.amazon.com/bedrock/latest/userguide/ ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-    """)
+            print(f"\n⚠️  エラー: {e}")
 
 
 async def main():
@@ -783,31 +405,15 @@ async def main():
     print("""
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║                                                                              ║
-║              実装方法の選択                                                    ║
+║  ApplyGuardrail API + Claude Agent SDK デモ                                  ║
+║                                                                              ║
+║  INPUT/OUTPUT フィルタリング + リアルタイムチェック機能                          ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
-
-1. boto3実装: Guardrailsが確実に適用されます（Agent SDK機能なし）
-2. Claude Agent SDK実装: Guardrailsが適用されない可能性があります
-3. ApplyGuardrail API + Agent SDK（推奨）: 入出力フィルタリング + Agent SDK機能
-
     """)
     
-    choice = input("実装を選択してください (1/2/3, デフォルト: 3): ").strip() or "3"
-    
-    if choice == "1":
-        print("\n✅ boto3実装を使用します")
-        demonstrate_boto3_streaming()
-    elif choice == "2":
-        print("\n✅ Claude Agent SDK実装を使用します")
-        # フロー図を表示
-        print_flow_diagram()
-        
-        # Claude Agent SDKのデモ
-        await demonstrate_guardrail_block()
-    else:
-        print("\n✅ ApplyGuardrail API + Agent SDK 実装を使用します")
-        await demonstrate_apply_guardrail_with_sdk()
+    # 推奨実装を実行
+    await demonstrate_apply_guardrail_with_sdk()
 
 
 if __name__ == "__main__":
@@ -819,22 +425,11 @@ if __name__ == "__main__":
 
 AWS_ACCESS_KEY_ID=your_access_key
 AWS_SECRET_ACCESS_KEY=your_secret_key
-AWS_REGION=us-east-1
+AWS_REGION=us-west-2
 
-# Guardrail設定（オプション）
-# 環境変数で設定する場合
+# Guardrail設定（必須）
 BEDROCK_GUARDRAIL_ID=your_guardrail_id
-
-# または、コード内で直接指定:
-# client = StreamingGuardrailClient(
-#     guardrail_id="your_guardrail_id",
-#     guardrail_version="1"
-# )
-
-# Langfuse設定（モニタリング用、オプション）
-LANGFUSE_PUBLIC_KEY=pk-lf-xxx
-LANGFUSE_SECRET_KEY=sk-lf-xxx
-LANGFUSE_HOST=https://cloud.langfuse.com
+BEDROCK_GUARDRAIL_VERSION=DRAFT
     """)
     
     # 非同期実行
