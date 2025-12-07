@@ -1,6 +1,57 @@
-# Claude Agent SDK with Bedrock & Langfuse
+# Claude Agent SDK with Bedrock Guardrails & Langfuse
 
-このプロジェクトは、**Claude Agent SDK**（公式エージェントフレームワーク）をAmazon BedrockをLLMプロバイダーとして使用し、Langfuseで監視する方法を示します。
+このプロジェクトは、**Claude Agent SDK**（公式エージェントフレームワーク）とAmazon Bedrock Guardrailsを組み合わせた安全なAIアプリケーションの実装方法を示します。
+
+## 🎯 主な成果
+
+**ApplyGuardrail API**を使用することで、Claude Agent SDKとBedrock Guardrailsのリアルタイム統合に成功しました：
+
+- ✅ **リアルタイム OUTPUT チェック**: ストリーミング中に有害コンテンツを検出・即座に停止
+- ✅ **実証済みの効果**: 2つのテストケースで有害コンテンツを検出し、ストリーミングを途中停止
+- ✅ **INPUT チェック**: プロンプト送信前のブロックでコスト削減
+- ✅ **Agent SDK機能の維持**: ツール使用や会話継続などの高度な機能
+- ✅ **柔軟な制御**: INPUT/OUTPUT フィルタリングを個別に設定可能（有効/無効切り替え）
+- ✅ **詳細なドキュメント**: 
+  - [実装ガイド](docs/apply_guardrails/implementation-guide.md) - バックエンドエンジニア向け
+  - [実験レポート](docs/apply_guardrails/streaming-realtime-check-experiment.md) - 検証結果
+
+## アーキテクチャ
+
+```
+User Input
+    ↓
+┌─────────────────────────────────────┐
+│ 1. INPUT チェック (オプション)        │
+│    ApplyGuardrail API               │
+│    - プロンプト送信前の検証           │
+│    - ブロック時: LLM実行なし          │
+└─────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────┐
+│ 2. Claude Agent SDK                 │
+│    (AWS Bedrock ストリーミング)      │
+│    - ツール使用、会話継続             │
+│    - リアルタイムチャンク出力         │
+└──────────┬──────────────────────────┘
+           │
+           │ バッファ蓄積 (例: 100文字)
+           ↓
+┌─────────────────────────────────────┐
+│ 3. OUTPUT チェック (リアルタイム)     │
+│    ApplyGuardrail API               │
+│    - 定期的なチェック (50-200文字)    │
+│    - 検出時: ストリーミング即座停止    │
+└─────────────────────────────────────┘
+    ↓
+    Langfuse (監視・トレーシング)
+```
+
+### リアルタイムチェックの特徴
+
+- **即座停止**: 有害コンテンツ検出時にストリーミングを即座に停止
+- **バッファ方式**: 指定文字数ごとに累積バッファをチェック
+- **設定可能**: チェック間隔 (0=無効, 50=厳格, 100=バランス, 200=パフォーマンス)
+- **コスト効率**: INPUT ブロックで LLM 実行コストをゼロに
 
 ## Claude Agent SDKとは？
 
@@ -12,22 +63,40 @@ Claude Agent SDKは、AnthropicのAIエージェント構築用公式フレー�
 - **ファイル操作とコード実行** - 組み込み機能
 - **状態管理** - マルチターン会話の処理
 
-## アーキテクチャ
-
-```
-Your App → Claude Agent SDK → AWS Bedrock → Claude Models
-                ↓
-           Langfuse (監視)
-```
-
 ## 機能
 
+- **🛡️ Bedrock Guardrails統合**: ApplyGuardrail APIによる入出力フィルタリング
 - **Claude Agent SDK**: Anthropic公式エージェントフレームワーク
 - **AWS Bedrockバックエンド**: AWS Bedrock経由でClaudeモデルを使用
 - **ストリーミングレスポンス**: リアルタイムのエージェントインタラクション
 - **Langfuse統合**: 完全な観測性とトレーシング
 - **ツールサポート**: Read、Write、Bash、カスタムツール
 - **UVパッケージマネージャー**: 高速でモダンなPythonパッケージ管理
+
+## 📚 ドキュメント
+
+### Guardrails 実装ガイド
+
+- **[実装ガイド](docs/apply_guardrails/implementation-guide.md)** - バックエンドエンジニア向け完全ガイド
+  - フロー図 (Mermaid)
+  - API レスポンスフォーマット詳細
+  - 実装パターン (基本 & リアルタイム)
+  - FastAPI 実装例
+  - エラーハンドリング
+
+- **[実験レポート](docs/apply_guardrails/streaming-realtime-check-experiment.md)** - リアルタイムチェック検証結果
+  - 8つのテストケース詳細
+  - リアルタイム停止の実証 (2ケース成功)
+  - パフォーマンスメトリクス
+  - 実装推奨事項
+
+- **[基礎ドキュメント](docs/apply_guardrails/apply-guardrail-api-implementation.md)** - ApplyGuardrail API の基礎
+
+### インフラとサンプル
+
+- **[Terraform インフラ](terraform/)** - Guardrails リソースの定義
+- **[実装サンプル](terraform/examples/)** - リアルタイムチェック実装
+  - `streaming_example.py` - AgentSDKWithApplyGuardrail クラス
 
 ## 前提条件
 
@@ -63,10 +132,14 @@ make setup
 # AWS認証情報
 AWS_ACCESS_KEY_ID=your_aws_access_key_id
 AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key
-AWS_REGION=us-east-1
+AWS_REGION=us-west-2
 
 # Claude Agent SDK - Bedrockモードを有効化
 CLAUDE_CODE_USE_BEDROCK=1
+
+# Bedrock Guardrails設定（オプション）
+BEDROCK_GUARDRAIL_ID=your_guardrail_id
+BEDROCK_GUARDRAIL_VERSION=DRAFT
 
 # Langfuse認証情報（https://cloud.langfuse.com から取得）
 LANGFUSE_PUBLIC_KEY=pk-lf-...
@@ -80,6 +153,8 @@ ANTHROPIC_MODEL=anthropic.claude-3-5-sonnet-20241022-v2:0
 
 ### 4. サンプルの実行
 
+#### 基本的な使用例
+
 ```bash
 # Claude Agent SDKサンプルを実行
 make run
@@ -87,6 +162,30 @@ make run
 # または直接実行
 uv run python src/examples.py
 ```
+
+#### Guardrails統合デモ（リアルタイムチェック）
+
+```bash
+# リアルタイム Guardrails チェックのデモを実行
+cd terraform/examples
+python streaming_example.py
+```
+
+**実装内容**:
+- `AgentSDKWithApplyGuardrail` クラス: Claude Agent SDK + ApplyGuardrail API
+- INPUT チェック: プロンプト送信前の検証
+- OUTPUT チェック: ストリーミング中のリアルタイム検証（100文字ごと）
+- 即座停止: 有害コンテンツ検出時にストリーミングを即座に停止
+
+**テストケース**:
+- Part 1: INPUT フィルタリングテスト
+- Part 1.5: INPUT 無効 + リアルタイム OUTPUT チェック（攻撃的プロンプト）
+- Part 1.6: Haiku モデルでの検証
+- Part 2: OUTPUT シミュレーションテスト
+
+詳細は以下を参照：
+- [実装ガイド](docs/apply_guardrails/implementation-guide.md)
+- [実験レポート](docs/apply_guardrails/streaming-realtime-check-experiment.md)
 
 ## AWS Bedrockのセットアップ
 

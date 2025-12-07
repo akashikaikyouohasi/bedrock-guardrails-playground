@@ -2,11 +2,12 @@
 
 ## プロジェクト概要
 
-このプロジェクトは、**Claude Agent SDK** を AWS Bedrock のバックエンドとして使用し、Langfuse で LLM アプリケーションを監視・評価するサンプルです。
+このプロジェクトは、**Claude Agent SDK** を AWS Bedrock のバックエンドとして使用し、**Bedrock Guardrails のリアルタイム統合**と Langfuse で LLM アプリケーションを監視・評価するサンプルです。
 
 ### 主な目的
 - Claude Agent SDK の動作確認
 - Bedrock 経由での Claude モデルの利用
+- **Bedrock Guardrails のリアルタイムチェック実装** (ApplyGuardrail API)
 - Langfuse を使用した LLM トレースと評価
 - エージェントベースのアプリケーション構築
 
@@ -18,18 +19,38 @@
 └──────┬──────┘
        │
        ▼
-┌──────────────────────────┐
-│  Claude Agent SDK        │
-│ (src/agent.py)           │
-└──────┬───────────────────┘
+┌──────────────────────────────────────┐
+│  Claude Agent SDK + Guardrails       │
+│  (src/agent.py)                      │
+│  (terraform/examples/                │
+│   streaming_example.py)              │
+└──────┬───────────────────────────────┘
        │
-       ├─────────────────────────┐
-       │                         │
-       ▼                         ▼
-┌─────────────┐          ┌──────────────────┐
-│ AWS Bedrock │          │ Langfuse Server  │
-│ (Claude 3+) │          │ (Monitoring)     │
-└─────────────┘          └──────────────────┘
+       ├────────────────┬─────────────────┐
+       │                │                 │
+       ▼                ▼                 ▼
+┌─────────────┐  ┌──────────────┐  ┌──────────────────┐
+│ AWS Bedrock │  │  ApplyGuard  │  │ Langfuse Server  │
+│ (Claude 3+) │  │  rail API    │  │ (Monitoring)     │
+│ (Streaming) │  │ (Realtime    │  └──────────────────┘
+└─────────────┘  │  Check)      │
+                 └──────────────┘
+```
+
+### Guardrails リアルタイムチェック
+
+```
+User Input
+    ↓
+[INPUT Check] → ApplyGuardrail API
+    ↓ (if PASS)
+[Claude Streaming] → Bedrock
+    ↓ (chunks)
+[Buffer 蓄積] → 100文字ごと
+    ↓
+[OUTPUT Check] → ApplyGuardrail API
+    ↓
+[BLOCKED?] → Yes: 停止 / No: 継続
 ```
 
 ## ファイル構成と役割
@@ -40,6 +61,13 @@
   - `BedrockAgentSDK`: ツールなしのシンプルなエージェント
   - `BedrockAgentSDKWithClient`: ツール機能付きのエージェント
   - `@observe()` デコレーターで自動トレーシング有効化
+
+- **`terraform/examples/streaming_example.py`** - Guardrails リアルタイムチェック実装
+  - `AgentSDKWithApplyGuardrail`: Claude Agent SDK + ApplyGuardrail API
+  - INPUT チェック: プロンプト送信前の検証（オプション）
+  - OUTPUT チェック: ストリーミング中のリアルタイム検証
+  - 即座停止: 有害コンテンツ検出時にストリーミングを即座に停止
+  - チェック間隔設定: 0（無効）、50（厳格）、100（バランス）、200（パフォーマンス）
 
 - **`src/evaluation.py`** - Langfuse 評価システム
   - `DatasetClient` クラスでデータセット管理
@@ -77,9 +105,60 @@
   - `sample_qa.csv`: CSV 形式のサンプルデータ
 
 - **`terraform/`** - インフラストラクチャコード
-  - AWS リソース定義
+  - AWS リソース定義（Bedrock Guardrails）
+
+- **`docs/apply_guardrails/`** - Guardrails 実装ドキュメント
+  - `implementation-guide.md`: バックエンドエンジニア向け実装ガイド
+    - フロー図（Mermaid）
+    - API レスポンスフォーマット詳細
+    - 実装パターン（基本 & リアルタイム）
+    - FastAPI 実装例
+  - `streaming-realtime-check-experiment.md`: 実験レポート
+    - 8つのテストケース
+    - リアルタイム停止の実証（2ケース成功）
+    - パフォーマンスメトリクス
+  - `apply-guardrail-api-implementation.md`: ApplyGuardrail API 基礎
 
 ## 重要な実装ポイント
+
+### Guardrails リアルタイムチェック実装
+
+**背景**: Claude Agent SDK は Bedrock Guardrails をネイティブサポートしていない
+
+**解決策**: ApplyGuardrail API を使用したハイブリッドアプローチ
+
+```python
+from streaming_example import AgentSDKWithApplyGuardrail
+
+# Guardrails 統合エージェントの初期化
+agent = AgentSDKWithApplyGuardrail(
+    guardrail_id="gifc1v7qwbdm",
+    guardrail_version="DRAFT",
+    enable_input_check=True,   # INPUT チェック有効
+    enable_output_check=True   # OUTPUT チェック有効
+)
+
+# リアルタイムチェック付きストリーミング
+try:
+    response = agent.chat_streaming(
+        prompt="ユーザープロンプト",
+        realtime_check_interval=100  # 100文字ごとにチェック
+    )
+    print(response)
+except ValueError as e:
+    print(f"ブロック: {e}")
+```
+
+**特徴**:
+- INPUT ブロック時: LLM 実行なし（コスト削減）
+- OUTPUT リアルタイムチェック: ストリーミング中に定期的に検証
+- 即座停止: 有害コンテンツ検出時にストリーミングを即座に停止
+- 柔軟な設定: INPUT/OUTPUT を個別に有効/無効化
+
+**実証済みの効果**:
+- 2つのテストケースでストリーミング途中停止に成功
+- 50-100文字間隔でのチェックで実用的なパフォーマンス
+- Claude の安全機構 + Guardrails の二重防御
 
 ### Langfuse 3.x API の変更点
 
@@ -188,6 +267,19 @@ CLI not found error
 - [UV Package Manager](https://github.com/astral-sh/uv)
 
 ## 最新の変更
+
+### 2025-12-07
+
+- **Guardrails リアルタイムチェック実装完了**
+  - `AgentSDKWithApplyGuardrail` クラス実装
+  - INPUT/OUTPUT チェックの柔軟な設定
+  - ストリーミング途中停止機能の実証
+  - 実験レポートと実装ガイドの作成
+
+- **ドキュメント整備**
+  - `implementation-guide.md`: バックエンドエンジニア向け実装ガイド
+  - `streaming-realtime-check-experiment.md`: 検証実験レポート
+  - フロー図（Mermaid）、API レスポンスフォーマット詳細
 
 ### 2024-12-06
 
