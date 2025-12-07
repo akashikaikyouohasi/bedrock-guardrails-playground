@@ -210,7 +210,12 @@ class AgentSDKWithApplyGuardrail:
                             if isinstance(block, TextBlock):
                                 full_response += block.text
                                 buffer += block.text
+                                # チャンクの境目を表示
+                                print(f"\n{'='*80}", flush=True)
+                                print(f"[チャンク] 長さ: {len(block.text)} 文字", flush=True)
+                                print('='*80, flush=True)
                                 print(block.text, end='', flush=True)
+                                print(f"\n{'='*80}\n", flush=True)
                                 
                                 # リアルタイムチェック
                                 if self.enable_output_filtering and self.guardrail_id and realtime_check_interval > 0:
