@@ -14,6 +14,38 @@ load_dotenv()
 # Initialize Langfuse client
 langfuse = get_client()
 
+# Application version
+APP_VERSION = "1.0.0"
+
+# Try to import tiktoken for token estimation
+try:
+    import tiktoken
+    TIKTOKEN_AVAILABLE = True
+except ImportError:
+    TIKTOKEN_AVAILABLE = False
+
+
+def estimate_tokens(text: str, model: str = "gpt-4") -> int:
+    """Estimate token count for given text.
+
+    Args:
+        text: Text to estimate tokens for
+        model: Model name for encoding (default: gpt-4 for Claude compatibility)
+
+    Returns:
+        Estimated token count
+    """
+    if not TIKTOKEN_AVAILABLE:
+        # Fallback: rough estimation (1 token ≈ 4 characters for English)
+        return len(text) // 4
+
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+        return len(encoding.encode(text))
+    except Exception:
+        # Fallback if model not found
+        return len(text) // 4
+
 
 def extract_message_text(message: Message, include_result: bool = False) -> str:
     """Extract text from a Message object.
@@ -62,15 +94,24 @@ class BedrockAgentSDK:
         self,
         aws_region: Optional[str] = None,
         cwd: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
     ):
         """Initialize the Bedrock Agent SDK.
 
         Args:
             aws_region: AWS region where Bedrock is available
             cwd: Working directory for the agent
+            model: Model identifier (e.g., "anthropic.claude-3-5-sonnet-20241022-v2:0")
+            temperature: Temperature for sampling (0.0 - 1.0)
+            max_tokens: Maximum tokens to generate
         """
         self.aws_region = aws_region or os.getenv("AWS_REGION", "us-east-1")
         self.cwd = cwd or os.getcwd()
+        self.model = model or os.getenv("MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0")
+        self.temperature = temperature
+        self.max_tokens = max_tokens
 
         # Setup Bedrock environment
         setup_bedrock_env()
@@ -78,6 +119,8 @@ class BedrockAgentSDK:
     async def chat_streaming(
         self,
         prompt: str,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> AsyncIterator[str]:
         """Send a chat message and stream the response using Claude Agent SDK.
 
@@ -85,23 +128,44 @@ class BedrockAgentSDK:
 
         Args:
             prompt: User prompt
+            session_id: Optional session ID for conversation tracking
+            user_id: Optional user ID for user-level metrics
 
         Yields:
             Messages from the agent
         """
         # Manual Langfuse tracing: Create generation object
+        metadata = {
+            "cwd": self.cwd,
+            "aws_region": self.aws_region,
+            "version": APP_VERSION,
+            "streaming": "true",
+            "sdk": "claude-agent-sdk",
+        }
+        if session_id:
+            metadata["session_id"] = session_id
+        if user_id:
+            metadata["user_id"] = user_id
+
         generation = langfuse.start_generation(
             name="chat_streaming",
-            model="bedrock-claude",
+            model=self.model,
             input=prompt,
-            metadata={
-                "cwd": self.cwd,
+            model_parameters={
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens,
             },
+            metadata=metadata,
         )
 
         full_response = ""
+        input_tokens = 0
+        output_tokens = 0
 
         try:
+            # Estimate input tokens
+            input_tokens = estimate_tokens(prompt)
+
             # Use Claude Agent SDK query function with streaming
             # Note: query() does not support tools or cwd parameters in current version
             async for message in query(prompt=prompt):
@@ -110,8 +174,22 @@ class BedrockAgentSDK:
                     full_response += message_text
                     yield message_text
 
-            # Update generation with output
-            generation.update(output=full_response)
+            # Estimate output tokens
+            output_tokens = estimate_tokens(full_response)
+
+            # Update generation with output and usage
+            generation.update(
+                output=full_response,
+                usage_details={
+                    "input": input_tokens,
+                    "output": output_tokens,
+                    "total": input_tokens + output_tokens,
+                },
+                metadata={
+                    "message_count": 1,
+                    "response_length": len(full_response),
+                },
+            )
 
         except Exception as e:
             generation.update(
@@ -129,6 +207,8 @@ class BedrockAgentSDK:
     async def chat(
         self,
         prompt: str,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> str:
         """Send a chat message and get the complete response.
 
@@ -136,29 +216,53 @@ class BedrockAgentSDK:
 
         Args:
             prompt: User prompt
+            session_id: Optional session ID for conversation tracking
+            user_id: Optional user ID for user-level metrics
 
         Returns:
             Complete response text
         """
         # Update Langfuse context
+        metadata = {
+            "cwd": self.cwd,
+            "aws_region": self.aws_region,
+            "version": APP_VERSION,
+            "streaming": "false",
+            "sdk": "claude-agent-sdk",
+        }
+        if session_id:
+            metadata["session_id"] = session_id
+        if user_id:
+            metadata["user_id"] = user_id
+
         langfuse.update_current_generation(
-            model="bedrock-claude",
+            model=self.model,
             input=prompt,
-            metadata={
-                "cwd": self.cwd,
+            model_parameters={
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens,
             },
+            metadata=metadata,
         )
 
         full_response = ""
         message_count = 0
+        input_tokens = 0
+        output_tokens = 0
 
         try:
+            # Estimate input tokens
+            input_tokens = estimate_tokens(prompt)
+
             # Note: query() does not support tools or cwd parameters in current version
             async for message in query(prompt=prompt):
                 message_text = self._extract_message_text(message)
                 if message_text:  # 空文字列はスキップ
                     message_count += 1
                     full_response += message_text + "\n"
+
+            # Estimate output tokens
+            output_tokens = estimate_tokens(full_response)
 
         except Exception as e:
             langfuse.update_current_generation(
@@ -169,9 +273,15 @@ class BedrockAgentSDK:
 
         # Update Langfuse
         langfuse.update_current_generation(
-            output=full_response,
+            output=full_response.strip(),
+            usage_details={
+                "input": input_tokens,
+                "output": output_tokens,
+                "total": input_tokens + output_tokens,
+            },
             metadata={
                 "message_count": message_count,
+                "response_length": len(full_response),
             },
         )
 
@@ -197,6 +307,9 @@ class BedrockAgentSDKWithClient:
         aws_region: Optional[str] = None,
         cwd: Optional[str] = None,
         tools: Optional[list[str]] = None,
+        model: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
     ):
         """Initialize the Bedrock Agent SDK with ClaudeSDKClient.
 
@@ -204,10 +317,16 @@ class BedrockAgentSDKWithClient:
             aws_region: AWS region where Bedrock is available
             cwd: Working directory for the agent
             tools: List of allowed tools (e.g., ["Read", "Write", "Bash"])
+            model: Model identifier (e.g., "anthropic.claude-3-5-sonnet-20241022-v2:0")
+            temperature: Temperature for sampling (0.0 - 1.0)
+            max_tokens: Maximum tokens to generate
         """
         self.aws_region = aws_region or os.getenv("AWS_REGION", "us-east-1")
         self.cwd = cwd or os.getcwd()
         self.tools = tools
+        self.model = model or os.getenv("MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0")
+        self.temperature = temperature
+        self.max_tokens = max_tokens
 
         # Setup Bedrock environment
         setup_bedrock_env()
@@ -233,11 +352,15 @@ class BedrockAgentSDKWithClient:
     async def chat_with_client(
         self,
         prompt: str,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> AsyncIterator[str]:
         """Send a chat using ClaudeSDKClient for bidirectional conversation.
 
         Args:
             prompt: User prompt
+            session_id: Optional session ID for conversation tracking
+            user_id: Optional user ID for user-level metrics
 
         Yields:
             Response messages
@@ -246,19 +369,39 @@ class BedrockAgentSDKWithClient:
             raise RuntimeError("Client not initialized. Use async with context manager.")
 
         # Manual Langfuse tracing: Create generation object
+        metadata = {
+            "tools": str(self.tools) if self.tools else "none",
+            "tools_count": str(len(self.tools)) if self.tools else "0",
+            "cwd": self.cwd,
+            "aws_region": self.aws_region,
+            "version": APP_VERSION,
+            "streaming": "true",
+            "sdk": "claude-agent-sdk-with-client",
+        }
+        if session_id:
+            metadata["session_id"] = session_id
+        if user_id:
+            metadata["user_id"] = user_id
+
         generation = langfuse.start_generation(
             name="chat_with_client",
-            model="bedrock-claude",
+            model=self.model,
             input=prompt,
-            metadata={
-                "tools": self.tools,
-                "cwd": self.cwd,
+            model_parameters={
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens,
             },
+            metadata=metadata,
         )
 
         full_response = ""
+        input_tokens = 0
+        output_tokens = 0
 
         try:
+            # Estimate input tokens
+            input_tokens = estimate_tokens(prompt)
+
             # Send query to Claude
             await self.client.query(prompt)
 
@@ -269,8 +412,22 @@ class BedrockAgentSDKWithClient:
                     full_response += message_text
                     yield message_text
 
-            # Update generation with output
-            generation.update(output=full_response)
+            # Estimate output tokens
+            output_tokens = estimate_tokens(full_response)
+
+            # Update generation with output and usage
+            generation.update(
+                output=full_response,
+                usage_details={
+                    "input": input_tokens,
+                    "output": output_tokens,
+                    "total": input_tokens + output_tokens,
+                },
+                metadata={
+                    "message_count": 1,
+                    "response_length": len(full_response),
+                },
+            )
 
         except Exception as e:
             generation.update(
@@ -290,37 +447,86 @@ class BedrockAgentSDKWithClient:
 
 
 # Convenience function for simple usage
-async def simple_query(prompt: str) -> str:
+async def simple_query(
+    prompt: str,
+    session_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    model: Optional[str] = None,
+    temperature: float = 0.7,
+    max_tokens: int = 4096,
+) -> str:
     """Simple query function using Claude Agent SDK with Bedrock.
 
     Note: This function does NOT support tools. Use BedrockAgentSDKWithClient for tool support.
 
     Args:
         prompt: User prompt
+        session_id: Optional session ID for conversation tracking
+        user_id: Optional user ID for user-level metrics
+        model: Model identifier (e.g., "anthropic.claude-3-5-sonnet-20241022-v2:0")
+        temperature: Temperature for sampling (0.0 - 1.0)
+        max_tokens: Maximum tokens to generate
 
     Returns:
         Complete response
     """
     setup_bedrock_env()
 
+    model_id = model or os.getenv("MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0")
+    aws_region = os.getenv("AWS_REGION", "us-east-1")
+
     # Manual Langfuse tracing: Create generation object
+    metadata = {
+        "aws_region": aws_region,
+        "version": APP_VERSION,
+        "streaming": "false",
+        "sdk": "claude-agent-sdk",
+    }
+    if session_id:
+        metadata["session_id"] = session_id
+    if user_id:
+        metadata["user_id"] = user_id
+
     generation = langfuse.start_generation(
         name="simple_query",
-        model="bedrock-claude",
+        model=model_id,
         input=prompt,
+        model_parameters={
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        },
+        metadata=metadata,
     )
 
     full_response = ""
+    input_tokens = 0
+    output_tokens = 0
 
     try:
+        # Estimate input tokens
+        input_tokens = estimate_tokens(prompt)
+
         # query() does not support tools parameter
         async for message in query(prompt=prompt):
             message_text = extract_message_text(message)
             if message_text:  # 空文字列はスキップ
                 full_response += message_text + "\n"
 
-        # Update generation with output
-        generation.update(output=full_response)
+        # Estimate output tokens
+        output_tokens = estimate_tokens(full_response)
+
+        # Update generation with output and usage
+        generation.update(
+            output=full_response.strip(),
+            usage_details={
+                "input": input_tokens,
+                "output": output_tokens,
+                "total": input_tokens + output_tokens,
+            },
+            metadata={
+                "response_length": len(full_response),
+            },
+        )
 
     except Exception as e:
         generation.update(
