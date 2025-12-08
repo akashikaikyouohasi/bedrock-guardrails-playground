@@ -1,0 +1,1 @@
+print("「Claude Agent SDKからこんにちは！」")

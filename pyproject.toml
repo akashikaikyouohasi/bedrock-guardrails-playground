@@ -17,6 +17,10 @@ dev = [
     "ipython>=8.0.0",
     "pytest>=8.0.0",
 ]
+evaluation = [
+    "deepeval>=1.0.0",
+    "langchain-aws>=0.1.0",
+]
 
 [build-system]
 requires = ["hatchling"]

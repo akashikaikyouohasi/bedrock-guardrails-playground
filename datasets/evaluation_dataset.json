@@ -1,0 +1,64 @@
+{
+  "test_cases": [
+    {
+      "input": "量子コンピューティングとは何ですか？",
+      "expected_output": "量子コンピューティングは、量子力学の原理（重ね合わせやエンタングルメント）を利用して計算を行う技術です。従来のコンピューターがビット（0または1）を使うのに対し、量子コンピューターは量子ビット（キュービット）を使い、複数の状態を同時に表現できます。これにより、特定の問題（暗号解読、最適化問題など）で圧倒的な計算速度を実現する可能性があります。",
+      "context": [],
+      "tags": ["knowledge", "explanation", "technical"]
+    },
+    {
+      "input": "AIと機械学習の違いは何ですか？",
+      "expected_output": "AI（人工知能）は、人間の知能を模倣する技術全般を指す広い概念です。一方、機械学習はAIの一分野で、データからパターンを学習してタスクを実行する手法です。つまり、機械学習はAIを実現するための主要な手段の一つです。",
+      "context": [],
+      "tags": ["knowledge", "comparison", "AI"]
+    },
+    {
+      "input": "「Claude Agent SDKからこんにちは！」と出力するhello.pyファイルを作成してください",
+      "expected_output": "hello.py ファイルを作成しました。",
+      "context": ["tool: Write", "file: hello.py"],
+      "tags": ["tool-usage", "file-operation", "code-generation"]
+    },
+    {
+      "input": "Pythonで1から10までの数字を出力するコードを書いてください",
+      "expected_output": "for i in range(1, 11):\n    print(i)",
+      "context": [],
+      "tags": ["code-generation", "python", "simple"]
+    },
+    {
+      "input": "今日の日付を教えてください",
+      "expected_output": "今日の日付は2025年12月8日です。",
+      "context": [],
+      "tags": ["knowledge", "date", "current-info"]
+    },
+    {
+      "input": "東京の人口は何人ですか？",
+      "expected_output": "東京都の人口は約1400万人です（2023年時点）。",
+      "context": [],
+      "tags": ["knowledge", "facts", "geography"]
+    },
+    {
+      "input": "リストと辞書の違いをPythonで説明してください",
+      "expected_output": "Pythonにおいて、リストは順序付きの要素の集合で、インデックスでアクセスします（例: my_list = [1, 2, 3]）。辞書はキーと値のペアを持つ順序なしの集合で、キーでアクセスします（例: my_dict = {'name': 'Alice', 'age': 30}）。リストは同じ値を複数持てますが、辞書のキーは一意である必要があります。",
+      "context": [],
+      "tags": ["knowledge", "python", "data-structures"]
+    },
+    {
+      "input": "APIとは何ですか？簡単に説明してください",
+      "expected_output": "API（Application Programming Interface）は、ソフトウェア間でデータをやり取りするための仕組みです。レストランのメニューのように、何ができるか（機能）と、どのように注文するか（リクエスト形式）を定義しています。これにより、異なるアプリケーションが互いに通信できます。",
+      "context": [],
+      "tags": ["knowledge", "technical", "beginner-friendly"]
+    },
+    {
+      "input": "GitHubとは何ですか？",
+      "expected_output": "GitHubは、ソフトウェア開発のためのプラットフォームで、Gitというバージョン管理システムを使ってコードを保存・共有できます。開発者がコードを公開したり、他の人のプロジェクトに貢献したり、チームで協力してソフトウェアを開発したりするのに使われます。",
+      "context": [],
+      "tags": ["knowledge", "development-tools", "git"]
+    },
+    {
+      "input": "クラウドコンピューティングのメリットを3つ教えてください",
+      "expected_output": "クラウドコンピューティングの主なメリットは以下の3つです：1) コスト削減 - 物理サーバーの購入・維持が不要で、使った分だけ支払う。2) スケーラビリティ - 需要に応じてリソースを簡単に増減できる。3) アクセス性 - インターネット接続があればどこからでもアクセス可能。",
+      "context": [],
+      "tags": ["knowledge", "cloud", "benefits"]
+    }
+  ]
+}

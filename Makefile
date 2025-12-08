@@ -1,15 +1,17 @@
-.PHONY: help install sync run shell clean test
+.PHONY: help install sync run shell clean test eval eval-setup
 
 # Default target
 help:
 	@echo "Available commands:"
-	@echo "  make install    - Install dependencies using uv"
-	@echo "  make sync       - Sync dependencies (install + update)"
-	@echo "  make run        - Run examples (Claude Agent SDK + Bedrock)"
-	@echo "  make shell      - Start IPython shell with agent loaded"
-	@echo "  make clean      - Remove cache and temporary files"
-	@echo "  make test       - Run tests (if available)"
-	@echo "  make setup      - First-time setup (install + create .env)"
+	@echo "  make install     - Install dependencies using uv"
+	@echo "  make sync        - Sync dependencies (install + update)"
+	@echo "  make run         - Run examples (Claude Agent SDK + Bedrock)"
+	@echo "  make shell       - Start IPython shell with agent loaded"
+	@echo "  make clean       - Remove cache and temporary files"
+	@echo "  make test        - Run tests (if available)"
+	@echo "  make setup       - First-time setup (install + create .env)"
+	@echo "  make eval-setup  - Install evaluation dependencies (DeepEval)"
+	@echo "  make eval        - Run LLM evaluation with DeepEval"
 
 # Install dependencies
 install:
@@ -68,3 +70,17 @@ setup: install
 		echo ".env file already exists"; \
 	fi
 	@echo "Setup complete!"
+
+# Install evaluation dependencies
+eval-setup:
+	@echo "Installing evaluation dependencies (DeepEval + LangChain AWS)..."
+	uv pip install -e ".[evaluation]"
+	@echo "Evaluation setup complete!"
+	@echo "Note: Using Bedrock Claude 3 Haiku for evaluation (via DeepEvalBaseLLM)"
+	@echo "      AWS credentials must be set in .env"
+
+# Run LLM evaluation with DeepEval
+eval:
+	@echo "Running LLM evaluation with DeepEval + Bedrock Haiku..."
+	@echo "Note: This uses Bedrock Claude 3 Haiku for evaluation metrics"
+	uv run python src/run_evaluation_deepeval.py
