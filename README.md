@@ -66,6 +66,7 @@ Claude Agent SDKは、AnthropicのAIエージェント構築用公式フレー�
 ## 機能
 
 - **🛡️ Bedrock Guardrails統合**: ApplyGuardrail APIによる入出力フィルタリング
+- **⚡ Prompt Caching**: レイテンシ最大85%、コスト最大90%削減（東京リージョン対応）
 - **Claude Agent SDK**: Anthropic公式エージェントフレームワーク
 - **AWS Bedrockバックエンド**: AWS Bedrock経由でClaudeモデルを使用
 - **ストリーミングレスポンス**: リアルタイムのエージェントインタラクション
@@ -91,6 +92,14 @@ Claude Agent SDKは、AnthropicのAIエージェント構築用公式フレー�
   - 実装推奨事項
 
 - **[基礎ドキュメント](docs/apply_guardrails/apply-guardrail-api-implementation.md)** - ApplyGuardrail API の基礎
+
+### Prompt Caching ガイド
+
+- **[Prompt Caching ガイド](docs/prompt-caching/bedrock-prompt-caching-guide.md)** - コスト削減・高速化の完全ガイド
+  - レイテンシ最大 85%、コスト最大 90% 削減
+  - Claude Agent SDK での自動キャッシュ活用
+  - CloudWatch でのキャッシュ効果測定
+  - ✅ **東京リージョン対応済み**
 
 ### インフラとサンプル
 
