@@ -32,12 +32,26 @@ Amazon Bedrock Prompt Caching は、頻繁に使用されるプロンプトを�
 
 ## 対応モデル
 
-| モデル | モデル ID | 最小トークン | 最大チェックポイント |
-|--------|----------|-------------|-------------------|
-| **Claude 3.7 Sonnet** | anthropic.claude-3-7-sonnet-20250219-v1:0 | 1,024 | 4 |
-| **Claude 3.5 Haiku** | anthropic.claude-3-5-haiku-20241022-v1:0 | 2,048 | 4 |
-| **Claude Sonnet 4** | anthropic.claude-sonnet-4-20250514-v1:0 | 1,024 | 4 |
-| **Claude Opus 4** | anthropic.claude-opus-4-20250514-v1:0 | 1,024 | 4 |
+### Claude 4.5 シリーズ（最新）
+
+| モデル | モデル ID | 最小トークン | 日本語換算（目安） | 最大チェックポイント |
+|--------|----------|-------------|-------------------|-------------------|
+| **Claude Opus 4.5** | anthropic.claude-opus-4-5-* | **4,096** | 約 8,000〜12,000 文字 | 4 |
+| **Claude Sonnet 4.5** | anthropic.claude-sonnet-4-5-* | **1,024** | 約 2,000〜3,000 文字 | 4 |
+| **Claude Haiku 4.5** | anthropic.claude-haiku-4-5-* | **4,096** | 約 8,000〜12,000 文字 | 4 |
+
+**日本語文字数の計算**:
+- 1 トークン ≈ 2〜3 文字（日本語の場合）
+- 例: 1,024 トークン ≈ 2,000〜3,000 文字程度
+
+### Claude 4.0 / 3.x シリーズ
+
+| モデル | モデル ID | 最小トークン | 日本語換算（目安） | 最大チェックポイント |
+|--------|----------|-------------|-------------------|-------------------|
+| **Claude 3.7 Sonnet** | anthropic.claude-3-7-sonnet-20250219-v1:0 | 1,024 | 約 2,000〜3,000 文字 | 4 |
+| **Claude 3.5 Haiku** | anthropic.claude-3-5-haiku-20241022-v1:0 | 2,048 | 約 4,000〜6,000 文字 | 4 |
+| **Claude Sonnet 4** | anthropic.claude-sonnet-4-20250514-v1:0 | 1,024 | 約 2,000〜3,000 文字 | 4 |
+| **Claude Opus 4** | anthropic.claude-opus-4-20250514-v1:0 | 1,024 | 約 2,000〜3,000 文字 | 4 |
 
 ### キャッシュ対象
 
@@ -58,7 +72,10 @@ Amazon Bedrock Prompt Caching は、頻繁に使用されるプロンプトを�
 | **TTL（有効期限）** | 5 分（固定） |
 | **TTL リセット** | キャッシュヒット時に 5 分延長 |
 | **最大チェックポイント** | リクエストあたり 4 個 |
-| **最小トークン数** | モデル依存（1,024〜2,048） |
+| **最小トークン数** | モデル依存 |
+| - Claude Sonnet 4.5 | 1,024 トークン（約 2,000〜3,000 文字） |
+| - Claude Opus 4.5 | 4,096 トークン（約 8,000〜12,000 文字） |
+| - Claude Haiku 4.5 | 4,096 トークン（約 8,000〜12,000 文字） |
 
 ### キャッシュヒットの条件
 
@@ -97,15 +114,63 @@ Amazon Bedrock Prompt Caching は、頻繁に使用されるプロンプトを�
 
 ---
 
+## AWS Bedrock の自動キャッシュ機能
+
+### InvokeModel API によるデフォルト有効化
+
+**重要: AWS Bedrock では Prompt Caching がデフォルトで有効です！** 🎉
+
+AWS の公式ドキュメントによると：
+
+> **InvokeModel API を呼び出すと、プロンプトキャッシュがデフォルトで有効になります**
+
+つまり、特別な設定や `cache_control` の手動設定は不要で、以下の条件を満たせば自動的にキャッシュが有効になります：
+
+```
+✅ 自動キャッシュの条件:
+1. 最小トークン数を満たす（モデルによって 1,024〜4,096 トークン）
+2. プレフィックス（静的部分）が同一
+3. TTL 内（5分以内にリクエスト）
+```
+
+参考リンク：https://docs.aws.amazon.com/ja_jp/bedrock/latest/userguide/prompt-caching.html
+
+### 手動設定との違い
+
+| 方法 | 説明 | 推奨 |
+|------|------|------|
+| **自動（Bedrock デフォルト）** | InvokeModel API が自動的に最適なキャッシュポイントを設定 | ✅ 推奨（ほとんどのケース） |
+| **手動（cache_control）** | `cache_control: {"type": "ephemeral"}` を明示的に設定 | 特定の最適化が必要な場合のみ |
+
+**ほとんどのユースケースでは、自動キャッシュで十分な効果が得られます。**
+
+### 確認方法
+
+Bedrock のログ（CloudWatch Logs）で以下のフィールドを確認できます：
+
+```json
+{
+  "input": {
+    "inputTokenCount": 2,
+    "cacheReadInputTokenCount": 14401,  // キャッシュから読み込まれたトークン
+    "cacheWriteInputTokenCount": 0      // キャッシュに書き込まれたトークン
+  }
+}
+```
+
+`cacheReadInputTokenCount` が 0 より大きければ、キャッシュが効いています。
+
+---
+
 ## Claude Agent SDK での利用
 
 ### 概要
 
 **重要: Claude Agent SDK では追加の実装は一切不要です！** ✨
 
-Claude Agent SDK は内部で自動的に Prompt Caching を活用します。環境変数を設定するだけで、以下が自動的にキャッシュされます：
+Claude Agent SDK は内部で AWS Bedrock の InvokeModel API を使用しているため、Prompt Caching が自動的に有効になります。環境変数を設定するだけで、以下が自動的にキャッシュされます：
 
-- ✅ システムプロンプト
+- ✅ システムプロンプト（最小トークン数以上の場合）
 - ✅ ツール定義
 - ✅ 会話コンテキスト
 
@@ -128,16 +193,21 @@ import asyncio
 from claude_agent_sdk import query, ClaudeAgentOptions
 
 async def main():
-    # 長いシステムプロンプト（1,024トークン以上で自動キャッシュ）
+    # 長いシステムプロンプト
+    # Claude Sonnet 4.5: 1,024トークン（約2,000〜3,000文字）以上で自動キャッシュ
+    # Claude Opus/Haiku 4.5: 4,096トークン（約8,000〜12,000文字）以上で自動キャッシュ
     system_prompt = """あなたは専門的なカスタマーサポートアシスタントです。
 
     以下のマニュアルに基づいて回答してください：
 
     [製品マニュアル]
     第1章: 製品概要
+    ...（長いテキスト - 最小トークン数を満たす必要があります）...
+
+    第2章: 基本操作
     ...（長いテキスト）...
 
-    第2章: トラブルシューティング
+    第3章: トラブルシューティング
     ...（長いテキスト）...
     """
 
@@ -815,6 +885,7 @@ AWS Bedrock のモデル呼び出しログ（CloudWatch Logs または S3）を�
 ## 参考リンク
 
 - [AWS Bedrock Prompt Caching 公式ドキュメント](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html)
+- [Anthropic Prompt Caching 公式ドキュメント](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) - Claude 4.5 モデルの最小トークン数仕様
 - [AWS Blog: Effectively use prompt caching on Amazon Bedrock](https://aws.amazon.com/blogs/machine-learning/effectively-use-prompt-caching-on-amazon-bedrock/)
 - [Claude Agent SDK Documentation](https://platform.claude.com/docs/en/agent-sdk/overview)
 - [Amazon Bedrock Pricing](https://aws.amazon.com/bedrock/pricing/)

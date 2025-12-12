@@ -362,13 +362,18 @@ async with BedrockAgentSDKWithClient(tools=tools) as agent:
 ## 利用可能なMakeコマンド
 
 ```bash
-make help       # 利用可能なコマンドを表示
-make install    # 依存関係をインストール
-make sync       # 依存関係を同期（インストール + 更新）
-make run        # サンプルを実行（Claude Agent SDK）
-make shell      # IPythonシェルを起動
-make clean      # キャッシュファイルを削除
-make setup      # 初回セットアップ
+make help           # 利用可能なコマンドを表示
+make install        # 依存関係をインストール
+make sync           # 依存関係を同期（インストール + 更新）
+make run            # サンプルを実行（Claude Agent SDK）
+make shell          # IPythonシェルを起動
+make clean          # キャッシュファイルを削除
+make setup          # 初回セットアップ
+
+# Prompt Caching 実験
+make cache-test     # 基本的なキャッシュテスト
+make cache-compare  # キャッシュあり・なし比較
+make cache-metrics  # CloudWatch メトリクス確認
 ```
 
 ## Langfuseでの監視

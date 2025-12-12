@@ -97,6 +97,7 @@ class BedrockAgentSDK:
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        system_prompt: Optional[str] = None,
     ):
         """Initialize the Bedrock Agent SDK.
 
@@ -106,12 +107,14 @@ class BedrockAgentSDK:
             model: Model identifier (e.g., "anthropic.claude-3-5-sonnet-20241022-v2:0")
             temperature: Temperature for sampling (0.0 - 1.0)
             max_tokens: Maximum tokens to generate
+            system_prompt: System prompt for the agent (supports Prompt Caching)
         """
         self.aws_region = aws_region or os.getenv("AWS_REGION", "us-east-1")
         self.cwd = cwd or os.getcwd()
         self.model = model or os.getenv("MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0")
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.system_prompt = system_prompt
 
         # Setup Bedrock environment
         setup_bedrock_env()
@@ -166,9 +169,14 @@ class BedrockAgentSDK:
             # Estimate input tokens
             input_tokens = estimate_tokens(prompt)
 
+            # Create options with system_prompt if provided
+            options = None
+            if self.system_prompt:
+                options = ClaudeAgentOptions(system_prompt=self.system_prompt)
+
             # Use Claude Agent SDK query function with streaming
             # Note: query() does not support tools or cwd parameters in current version
-            async for message in query(prompt=prompt):
+            async for message in query(prompt=prompt, options=options):
                 message_text = self._extract_message_text(message)
                 if message_text:  # 空文字列はスキップ
                     full_response += message_text
@@ -254,8 +262,13 @@ class BedrockAgentSDK:
             # Estimate input tokens
             input_tokens = estimate_tokens(prompt)
 
+            # Create options with system_prompt if provided
+            options = None
+            if self.system_prompt:
+                options = ClaudeAgentOptions(system_prompt=self.system_prompt)
+
             # Note: query() does not support tools or cwd parameters in current version
-            async for message in query(prompt=prompt):
+            async for message in query(prompt=prompt, options=options):
                 message_text = self._extract_message_text(message)
                 if message_text:  # 空文字列はスキップ
                     message_count += 1
