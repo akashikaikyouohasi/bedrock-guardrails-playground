@@ -162,6 +162,8 @@ except ValueError as e:
 - INPUT ブロック時: LLM 実行なし（コスト削減）
 - OUTPUT リアルタイムチェック: ストリーミング中に定期的に検証
 - 即座停止: 有害コンテンツ検出時にストリーミング停止
+- **AWS推奨バッファサイズ**: 1,000文字（1 TEXT_UNIT）
+- **チェック方式**: 区間ごと（累積ではない）- コストとレイテンシのバランス
 
 ### 3. Langfuse 3.x API の使用
 
@@ -215,8 +217,10 @@ async with BedrockAgentSDKWithClient(tools=["Read", "Write"]) as agent:
 
 3. OUTPUT チェック（リアルタイム）
    - バッファに蓄積（例: 100文字ごと）
-   - ApplyGuardrail API で累積バッファを検証
+   - ApplyGuardrail API で区間バッファを検証（チェック後クリア）
+   - ⚠️ 注意: 累積ではなく区間ごとのチェック（前回の文脈は失われる）
    - ブロック検出時: ストリーミング即座停止
+   - 最終チェック: 完了後に全体を再検証（オプション）
 
 4. Langfuse トレーシング
    - すべてのリクエストを自動記録
@@ -269,9 +273,21 @@ make cache-metrics  # CloudWatch Logs から確認
 
 ## ドキュメント参照
 
-- **Guardrails 実装**: `docs/apply_guardrails/implementation-guide.md`
-- **実験レポート**: `docs/apply_guardrails/streaming-realtime-check-experiment.md`
+### Guardrails 関連
+- **ApplyGuardrail API 総合ガイド**: `docs/apply_guardrails/README.md`
+- **ストリーミング実装ガイド**: `docs/apply_guardrails/streaming-implementation-guide.md`
+  - AWS公式推奨のバッファリング戦略（1,000文字単位）
+  - チェック単位の仕様（区間ごと vs 累積）の詳細
+  - エラーハンドリングとトラブルシューティング
+- **ベストプラクティス**: `docs/apply_guardrails/best-practices.md`
+  - アーキテクチャ設計、パフォーマンス最適化
+  - コスト最適化、セキュリティとコンプライアンス
+  - モニタリング、テストとバリデーション
+
+### その他
 - **Prompt Caching**: `docs/prompt-caching/bedrock-prompt-caching-guide.md`
+- **Langfuse 評価**: `docs/langfuse/evaluation-strategy.md`
+- **ADR**: `docs/adr/` - アーキテクチャ決定記録
 - **README**: プロジェクト全体概要と使用例
 
 ---
