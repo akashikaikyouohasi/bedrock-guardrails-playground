@@ -1,50 +1,45 @@
-"""Claude Agent SDK implementation with Bedrock and Langfuse integration."""
+"""Claude Agent SDK implementation with Bedrock and Langfuse integration.
+
+Langfuse トレーシングは langfuse_tracer.py に分離。
+このファイルはエージェント実装のみを含む。
+"""
 
 import os
 from typing import AsyncIterator, Optional
 from dotenv import load_dotenv
-import anyio
 from claude_agent_sdk import query, ClaudeSDKClient
-from claude_agent_sdk.types import Message, ClaudeAgentOptions
-from langfuse import observe, get_client
+from claude_agent_sdk.types import (
+    Message,
+    ClaudeAgentOptions,
+    ResultMessage,
+    AssistantMessage,
+    ToolUseBlock,
+    ToolResultBlock,
+)
+
+try:
+    # When running from project root
+    from src.langfuse_tracer import (
+        LangfuseTracer,
+        TracingConfig,
+        AgentMetrics,
+        extract_metrics_from_result,
+        create_tracer,
+        APP_VERSION,
+    )
+except ImportError:
+    # When running from src directory
+    from langfuse_tracer import (
+        LangfuseTracer,
+        TracingConfig,
+        AgentMetrics,
+        extract_metrics_from_result,
+        create_tracer,
+        APP_VERSION,
+    )
 
 # Load environment variables
 load_dotenv()
-
-# Initialize Langfuse client
-langfuse = get_client()
-
-# Application version
-APP_VERSION = "1.0.0"
-
-# Try to import tiktoken for token estimation
-try:
-    import tiktoken
-    TIKTOKEN_AVAILABLE = True
-except ImportError:
-    TIKTOKEN_AVAILABLE = False
-
-
-def estimate_tokens(text: str, model: str = "gpt-4") -> int:
-    """Estimate token count for given text.
-
-    Args:
-        text: Text to estimate tokens for
-        model: Model name for encoding (default: gpt-4 for Claude compatibility)
-
-    Returns:
-        Estimated token count
-    """
-    if not TIKTOKEN_AVAILABLE:
-        # Fallback: rough estimation (1 token ≈ 4 characters for English)
-        return len(text) // 4
-
-    try:
-        encoding = tiktoken.encoding_for_model(model)
-        return len(encoding.encode(text))
-    except Exception:
-        # Fallback if model not found
-        return len(text) // 4
 
 
 def extract_message_text(message: Message, include_result: bool = False) -> str:
@@ -58,19 +53,19 @@ def extract_message_text(message: Message, include_result: bool = False) -> str:
         Text content of the message
     """
     # AssistantMessageの場合、contentからテキストを抽出
-    if hasattr(message, 'content') and isinstance(message.content, list):
+    if hasattr(message, "content") and isinstance(message.content, list):
         text_parts = []
         for block in message.content:
-            if hasattr(block, 'text'):
+            if hasattr(block, "text"):
                 text_parts.append(block.text)
-        return '\n'.join(text_parts) if text_parts else ''
+        return "\n".join(text_parts) if text_parts else ""
 
     # ResultMessageの場合、include_resultがTrueの場合のみresultを返す
-    if include_result and hasattr(message, 'result') and message.result:
+    if include_result and hasattr(message, "result") and message.result:
         return message.result
 
     # その他のメッセージタイプはスキップ
-    return ''
+    return ""
 
 
 def setup_bedrock_env():
@@ -98,6 +93,8 @@ class BedrockAgentSDK:
         temperature: float = 0.7,
         max_tokens: int = 4096,
         system_prompt: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        environment: str = "development",
     ):
         """Initialize the Bedrock Agent SDK.
 
@@ -108,16 +105,42 @@ class BedrockAgentSDK:
             temperature: Temperature for sampling (0.0 - 1.0)
             max_tokens: Maximum tokens to generate
             system_prompt: System prompt for the agent (supports Prompt Caching)
+            tags: Custom tags for tracing
+            environment: Environment name (development, staging, production)
         """
         self.aws_region = aws_region or os.getenv("AWS_REGION", "us-east-1")
         self.cwd = cwd or os.getcwd()
-        self.model = model or os.getenv("MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0")
+        self.model = model or os.getenv(
+            "MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0"
+        )
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.system_prompt = system_prompt
+        self.tags = tags or []
+        self.environment = environment
 
         # Setup Bedrock environment
         setup_bedrock_env()
+
+    def _create_tracer(
+        self,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> LangfuseTracer:
+        """トレーサーを作成."""
+        config = TracingConfig(
+            session_id=session_id,
+            user_id=user_id,
+            tags=self.tags,
+            environment=self.environment,
+            aws_region=self.aws_region,
+            cwd=self.cwd,
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            tools=None,
+        )
+        return LangfuseTracer(config)
 
     async def chat_streaming(
         self,
@@ -137,37 +160,16 @@ class BedrockAgentSDK:
         Yields:
             Messages from the agent
         """
-        # Manual Langfuse tracing: Create generation object
-        metadata = {
-            "cwd": self.cwd,
-            "aws_region": self.aws_region,
-            "version": APP_VERSION,
-            "streaming": "true",
-            "sdk": "claude-agent-sdk",
-        }
-        if session_id:
-            metadata["session_id"] = session_id
-        if user_id:
-            metadata["user_id"] = user_id
+        tracer = self._create_tracer(session_id, user_id)
 
-        generation = langfuse.start_generation(
+        with tracer.trace_span(
             name="chat_streaming",
-            model=self.model,
             input=prompt,
-            model_parameters={
-                "temperature": self.temperature,
-                "max_tokens": self.max_tokens,
-            },
-            metadata=metadata,
-        )
-
-        full_response = ""
-        input_tokens = 0
-        output_tokens = 0
-
-        try:
-            # Estimate input tokens
-            input_tokens = estimate_tokens(prompt)
+            metadata={"streaming": "true"},
+            tags=["streaming"],
+        ) as span:
+            full_response = ""
+            metrics: Optional[AgentMetrics] = None
 
             # Create options with system_prompt if provided
             options = None
@@ -175,43 +177,29 @@ class BedrockAgentSDK:
                 options = ClaudeAgentOptions(system_prompt=self.system_prompt)
 
             # Use Claude Agent SDK query function with streaming
-            # Note: query() does not support tools or cwd parameters in current version
             async for message in query(prompt=prompt, options=options):
-                message_text = self._extract_message_text(message)
-                if message_text:  # 空文字列はスキップ
+                # ResultMessage からメトリクスを抽出
+                if isinstance(message, ResultMessage):
+                    metrics = extract_metrics_from_result(message)
+                    continue
+
+                message_text = extract_message_text(message)
+                if message_text:
                     full_response += message_text
                     yield message_text
 
-            # Estimate output tokens
-            output_tokens = estimate_tokens(full_response)
-
-            # Update generation with output and usage
-            generation.update(
+            # Generation を作成
+            tracer.create_generation(
+                parent=span,
+                name="llm_response",
+                input=prompt,
                 output=full_response,
-                usage_details={
-                    "input": input_tokens,
-                    "output": output_tokens,
-                    "total": input_tokens + output_tokens,
-                },
-                metadata={
-                    "message_count": 1,
-                    "response_length": len(full_response),
-                },
+                metrics=metrics,
             )
 
-        except Exception as e:
-            generation.update(
-                level="ERROR",
-                status_message=str(e),
-            )
-            raise
+            span.set_output(full_response)
+            span.update_metadata({"response_length": len(full_response)})
 
-        finally:
-            # End the generation
-            generation.end()
-            langfuse.flush()
-
-    @observe(as_type="generation")
     async def chat(
         self,
         prompt: str,
@@ -230,86 +218,51 @@ class BedrockAgentSDK:
         Returns:
             Complete response text
         """
-        # Update Langfuse context
-        metadata = {
-            "cwd": self.cwd,
-            "aws_region": self.aws_region,
-            "version": APP_VERSION,
-            "streaming": "false",
-            "sdk": "claude-agent-sdk",
-        }
-        if session_id:
-            metadata["session_id"] = session_id
-        if user_id:
-            metadata["user_id"] = user_id
+        tracer = self._create_tracer(session_id, user_id)
 
-        langfuse.update_current_generation(
-            model=self.model,
+        with tracer.trace_span(
+            name="chat",
             input=prompt,
-            model_parameters={
-                "temperature": self.temperature,
-                "max_tokens": self.max_tokens,
-            },
-            metadata=metadata,
-        )
-
-        full_response = ""
-        message_count = 0
-        input_tokens = 0
-        output_tokens = 0
-
-        try:
-            # Estimate input tokens
-            input_tokens = estimate_tokens(prompt)
+            metadata={"streaming": "false"},
+        ) as span:
+            full_response = ""
+            message_count = 0
+            metrics: Optional[AgentMetrics] = None
 
             # Create options with system_prompt if provided
             options = None
             if self.system_prompt:
                 options = ClaudeAgentOptions(system_prompt=self.system_prompt)
 
-            # Note: query() does not support tools or cwd parameters in current version
             async for message in query(prompt=prompt, options=options):
-                message_text = self._extract_message_text(message)
-                if message_text:  # 空文字列はスキップ
+                # ResultMessage からメトリクスを抽出
+                if isinstance(message, ResultMessage):
+                    metrics = extract_metrics_from_result(message)
+                    continue
+
+                message_text = extract_message_text(message)
+                if message_text:
                     message_count += 1
                     full_response += message_text + "\n"
 
-            # Estimate output tokens
-            output_tokens = estimate_tokens(full_response)
-
-        except Exception as e:
-            langfuse.update_current_generation(
-                level="ERROR",
-                status_message=str(e),
+            # Generation を作成
+            tracer.create_generation(
+                parent=span,
+                name="llm_response",
+                input=prompt,
+                output=full_response.strip(),
+                metrics=metrics,
             )
-            raise
 
-        # Update Langfuse
-        langfuse.update_current_generation(
-            output=full_response.strip(),
-            usage_details={
-                "input": input_tokens,
-                "output": output_tokens,
-                "total": input_tokens + output_tokens,
-            },
-            metadata={
-                "message_count": message_count,
-                "response_length": len(full_response),
-            },
-        )
+            span.set_output(full_response.strip())
+            span.update_metadata(
+                {
+                    "message_count": message_count,
+                    "response_length": len(full_response),
+                }
+            )
 
         return full_response.strip()
-
-    def _extract_message_text(self, message: Message) -> str:
-        """Extract text from a Message object.
-
-        Args:
-            message: Message from Claude Agent SDK
-
-        Returns:
-            Text content of the message
-        """
-        return extract_message_text(message)
 
 
 class BedrockAgentSDKWithClient:
@@ -323,6 +276,8 @@ class BedrockAgentSDKWithClient:
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        tags: Optional[list[str]] = None,
+        environment: str = "development",
     ):
         """Initialize the Bedrock Agent SDK with ClaudeSDKClient.
 
@@ -333,18 +288,44 @@ class BedrockAgentSDKWithClient:
             model: Model identifier (e.g., "anthropic.claude-3-5-sonnet-20241022-v2:0")
             temperature: Temperature for sampling (0.0 - 1.0)
             max_tokens: Maximum tokens to generate
+            tags: Custom tags for tracing
+            environment: Environment name (development, staging, production)
         """
         self.aws_region = aws_region or os.getenv("AWS_REGION", "us-east-1")
         self.cwd = cwd or os.getcwd()
         self.tools = tools
-        self.model = model or os.getenv("MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0")
+        self.model = model or os.getenv(
+            "MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0"
+        )
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.tags = tags or []
+        self.environment = environment
 
         # Setup Bedrock environment
         setup_bedrock_env()
 
         self.client: Optional[ClaudeSDKClient] = None
+
+    def _create_tracer(
+        self,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> LangfuseTracer:
+        """トレーサーを作成."""
+        config = TracingConfig(
+            session_id=session_id,
+            user_id=user_id,
+            tags=self.tags,
+            environment=self.environment,
+            aws_region=self.aws_region,
+            cwd=self.cwd,
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            tools=self.tools,
+        )
+        return LangfuseTracer(config)
 
     async def __aenter__(self):
         """Async context manager entry."""
@@ -379,84 +360,90 @@ class BedrockAgentSDKWithClient:
             Response messages
         """
         if not self.client:
-            raise RuntimeError("Client not initialized. Use async with context manager.")
+            raise RuntimeError(
+                "Client not initialized. Use async with context manager."
+            )
 
-        # Manual Langfuse tracing: Create generation object
-        metadata = {
-            "tools": str(self.tools) if self.tools else "none",
-            "tools_count": str(len(self.tools)) if self.tools else "0",
-            "cwd": self.cwd,
-            "aws_region": self.aws_region,
-            "version": APP_VERSION,
-            "streaming": "true",
-            "sdk": "claude-agent-sdk-with-client",
-        }
-        if session_id:
-            metadata["session_id"] = session_id
-        if user_id:
-            metadata["user_id"] = user_id
+        tracer = self._create_tracer(session_id, user_id)
 
-        generation = langfuse.start_generation(
+        with tracer.trace_span(
             name="chat_with_client",
-            model=self.model,
             input=prompt,
-            model_parameters={
-                "temperature": self.temperature,
-                "max_tokens": self.max_tokens,
+            metadata={
+                "tools": str(self.tools) if self.tools else "none",
+                "tools_count": str(len(self.tools)) if self.tools else "0",
             },
-            metadata=metadata,
-        )
+            tags=["with-tools"] if self.tools else [],
+        ) as span:
+            full_response = ""
+            metrics: Optional[AgentMetrics] = None
+            tool_call_count = 0
 
-        full_response = ""
-        input_tokens = 0
-        output_tokens = 0
+            try:
+                # Send query to Claude
+                await self.client.query(prompt)
 
-        try:
-            # Estimate input tokens
-            input_tokens = estimate_tokens(prompt)
+                # Receive response messages
+                async for message in self.client.receive_response():
+                    # ResultMessage からメトリクスを抽出
+                    if isinstance(message, ResultMessage):
+                        metrics = extract_metrics_from_result(message)
+                        continue
 
-            # Send query to Claude
-            await self.client.query(prompt)
+                    # AssistantMessage からツール使用を検出
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content:
+                            # ツール使用の検出
+                            if isinstance(block, ToolUseBlock):
+                                tool_call_count += 1
+                                tracer.start_tool_span(
+                                    parent=span,
+                                    tool_name=block.name,
+                                    tool_use_id=block.id,
+                                    tool_call_number=tool_call_count,
+                                    input=block.input,
+                                )
 
-            # Receive response messages
-            async for message in self.client.receive_response():
-                message_text = self._extract_message_text(message)
-                if message_text:  # 空文字列はスキップ
-                    full_response += message_text
-                    yield message_text
+                            # ツール結果の検出
+                            elif isinstance(block, ToolResultBlock):
+                                tracer.end_tool_span(
+                                    tool_use_id=block.tool_use_id,
+                                    output=block.content if block.content else "(empty)",
+                                    is_error=block.is_error,
+                                )
 
-            # Estimate output tokens
-            output_tokens = estimate_tokens(full_response)
+                    # テキスト抽出
+                    message_text = extract_message_text(message)
+                    if message_text:
+                        full_response += message_text
+                        yield message_text
 
-            # Update generation with output and usage
-            generation.update(
-                output=full_response,
-                usage_details={
-                    "input": input_tokens,
-                    "output": output_tokens,
-                    "total": input_tokens + output_tokens,
-                },
-                metadata={
-                    "message_count": 1,
-                    "response_length": len(full_response),
-                },
-            )
+                # 未終了のツール span を終了
+                tracer.end_all_pending_spans("no result received")
 
-        except Exception as e:
-            generation.update(
-                level="ERROR",
-                status_message=str(e),
-            )
-            raise
+                # Generation を作成
+                tracer.create_generation(
+                    parent=span,
+                    name="llm_response",
+                    input=prompt,
+                    output=full_response,
+                    metrics=metrics,
+                    tool_call_count=tool_call_count,
+                )
 
-        finally:
-            # End the generation
-            generation.end()
-            langfuse.flush()
+                span.set_output(full_response)
+                span.update_metadata(
+                    {
+                        "tool_calls": tool_call_count,
+                        "response_length": len(full_response),
+                    }
+                )
 
-    def _extract_message_text(self, message: Message) -> str:
-        """Extract text from a Message object."""
-        return extract_message_text(message)
+            except Exception as e:
+                # エラー時は未終了スパンをクリーンアップ
+                tracer.end_all_pending_spans(f"error: {str(e)}")
+                span.set_error(str(e))
+                raise
 
 
 # Convenience function for simple usage
@@ -467,6 +454,8 @@ async def simple_query(
     model: Optional[str] = None,
     temperature: float = 0.7,
     max_tokens: int = 4096,
+    tags: Optional[list[str]] = None,
+    environment: str = "development",
 ) -> str:
     """Simple query function using Claude Agent SDK with Bedrock.
 
@@ -479,78 +468,56 @@ async def simple_query(
         model: Model identifier (e.g., "anthropic.claude-3-5-sonnet-20241022-v2:0")
         temperature: Temperature for sampling (0.0 - 1.0)
         max_tokens: Maximum tokens to generate
+        tags: Custom tags for tracing
+        environment: Environment name (development, staging, production)
 
     Returns:
         Complete response
     """
     setup_bedrock_env()
 
-    model_id = model or os.getenv("MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0")
+    model_id = model or os.getenv(
+        "MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    )
     aws_region = os.getenv("AWS_REGION", "us-east-1")
 
-    # Manual Langfuse tracing: Create generation object
-    metadata = {
-        "aws_region": aws_region,
-        "version": APP_VERSION,
-        "streaming": "false",
-        "sdk": "claude-agent-sdk",
-    }
-    if session_id:
-        metadata["session_id"] = session_id
-    if user_id:
-        metadata["user_id"] = user_id
-
-    generation = langfuse.start_generation(
-        name="simple_query",
+    tracer = create_tracer(
+        session_id=session_id,
+        user_id=user_id,
+        tags=tags,
+        environment=environment,
+        aws_region=aws_region,
         model=model_id,
-        input=prompt,
-        model_parameters={
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        },
-        metadata=metadata,
     )
 
-    full_response = ""
-    input_tokens = 0
-    output_tokens = 0
+    with tracer.trace_span(
+        name="simple_query",
+        input=prompt,
+        metadata={"streaming": "false"},
+    ) as span:
+        full_response = ""
+        metrics: Optional[AgentMetrics] = None
 
-    try:
-        # Estimate input tokens
-        input_tokens = estimate_tokens(prompt)
-
-        # query() does not support tools parameter
         async for message in query(prompt=prompt):
+            # ResultMessage からメトリクスを抽出
+            if isinstance(message, ResultMessage):
+                metrics = extract_metrics_from_result(message)
+                continue
+
             message_text = extract_message_text(message)
-            if message_text:  # 空文字列はスキップ
+            if message_text:
                 full_response += message_text + "\n"
 
-        # Estimate output tokens
-        output_tokens = estimate_tokens(full_response)
-
-        # Update generation with output and usage
-        generation.update(
+        # Generation を作成
+        tracer.create_generation(
+            parent=span,
+            name="llm_response",
+            input=prompt,
             output=full_response.strip(),
-            usage_details={
-                "input": input_tokens,
-                "output": output_tokens,
-                "total": input_tokens + output_tokens,
-            },
-            metadata={
-                "response_length": len(full_response),
-            },
+            metrics=metrics,
         )
 
-    except Exception as e:
-        generation.update(
-            level="ERROR",
-            status_message=str(e),
-        )
-        raise
-
-    finally:
-        # End the generation
-        generation.end()
-        langfuse.flush()
+        span.set_output(full_response.strip())
+        span.update_metadata({"response_length": len(full_response)})
 
     return full_response.strip()

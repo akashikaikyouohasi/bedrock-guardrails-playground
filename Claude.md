@@ -69,11 +69,13 @@ User Input
 ### 重要なファイル構成
 
 #### Core Implementation
-- **`src/agent.py`** - エージェント実装の中核
+- **`src/agent.py`** - エージェント実装の中核 (v1.1.0 MVP改善版)
   - `BedrockAgentSDK`: シンプル版（ツールなし）
   - `BedrockAgentSDKWithClient`: 高機能版（ツールあり）
+  - `AgentMetrics`: ResultMessage から抽出したメトリクスを保持するデータクラス
   - Langfuse `@observe()` デコレーターで自動トレーシング
   - **重要**: `system_prompt` パラメータで Prompt Caching が自動有効化
+  - **v1.1.0 改善**: ResultMessage から実測値を取得、session_id/user_id をトレースレベルで設定
 
 - **`terraform/examples/streaming_example.py`** - Guardrails リアルタイム統合
   - `AgentSDKWithApplyGuardrail`: Claude Agent SDK + ApplyGuardrail API
@@ -165,22 +167,56 @@ except ValueError as e:
 - **AWS推奨バッファサイズ**: 1,000文字（1 TEXT_UNIT）
 - **チェック方式**: 区間ごと（累積ではない）- コストとレイテンシのバランス
 
-### 3. Langfuse 3.x API の使用
+### 3. Langfuse 3.x API の使用 (MVP改善版 v1.1.0)
 
 **重要**: Langfuse 2.x の `root_span.generation()` は v3.x で削除済み
 
+**改善点（v1.1.0）**:
+- ✅ `ResultMessage` から実際のトークン使用量・コスト・時間を取得（tiktoken推定から移行）
+- ✅ `session_id`/`user_id` をトレースレベルで設定（メタデータではなく適切なフィールドに）
+- ✅ Prompt Caching メトリクス（`cache_creation_input_tokens`, `cache_read_input_tokens`）を追跡
+
+```python
+from src.agent import BedrockAgentSDK
+
+# session_id/user_id はトレースレベルで自動設定される
+agent = BedrockAgentSDK(
+    system_prompt="長いシステムプロンプト...",
+)
+
+# Langfuse に正確なメトリクスが記録される:
+# - input_tokens, output_tokens (実測値)
+# - cache_creation_input_tokens, cache_read_input_tokens
+# - total_cost_usd, duration_ms
+# - session_id, user_id (トレースレベル)
+response = await agent.chat("質問", session_id="my-session", user_id="user-123")
+```
+
+**Langfuse ダッシュボードで確認できる情報**:
+- トークン使用量（入力/出力/キャッシュ）
+- コスト（USD）
+- レイテンシ（ms）
+- セッション別・ユーザー別の追跡
+- Prompt Caching の効果
+
+**API の使い方**:
 ```python
 # ❌ 古い API (v2.x) - 使用不可
 root_span = item.run(run_name="test")
 generation = root_span.generation(...)  # AttributeError
 
 # ✅ 新しい API (v3.x)
-span = item.run(run_name="test")
-# span を直接使用
-span.score(name="accuracy", value=1.0)
+# デコレーター使用時: langfuse_context を使用
+from langfuse.decorators import langfuse_context
 
-# または dataset.run_experiment() を使用（推奨）
-dataset.run_experiment(...)
+langfuse_context.update_current_trace(session_id="...", user_id="...")
+langfuse_context.update_current_observation(usage={...})
+
+# 手動トレーシング時: trace → generation の階層構造
+trace = langfuse.trace(name="...", session_id="...", user_id="...")
+generation = trace.generation(name="...", model="...", input="...")
+generation.update(output="...", usage={...})
+generation.end()
 ```
 
 ### 4. ツール使用の実装
