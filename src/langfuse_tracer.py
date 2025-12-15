@@ -7,8 +7,12 @@
 2. flush() の適切な呼び出し
 3. エラーレベル設定（ERROR, WARNING, DEFAULT）
 4. タグによるフィルタリング支援
+5. session_id / user_id のネイティブサポート
+6. ルートトレースによるスパン紐付け
+7. エラー時のスタックトレース記録
 """
 
+import traceback as tb
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Optional, Any
@@ -211,6 +215,69 @@ class LangfuseTracer:
         self._pending_spans: dict[str, Any] = {}
 
     @contextmanager
+    def trace_agent(
+        self,
+        name: str,
+        input: Any = None,
+        metadata: Optional[dict] = None,
+        tags: Optional[list[str]] = None,
+    ):
+        """エージェント操作をトレース（コンテキストマネージャー）.
+
+        Langfuse の start_as_current_span を使用してルートトレースを作成。
+        session_id / user_id はネイティブに設定。
+        try/finally でスパンの確実終了を保証。
+
+        Args:
+            name: スパン名
+            input: 入力データ
+            metadata: 追加メタデータ
+            tags: 追加タグ（Langfuse ネイティブタグとして設定）
+
+        Yields:
+            SpanWrapper: スパンラッパー
+        """
+        # メタデータをマージ（session_id/user_idはトレースレベルで設定するため除外）
+        merged_metadata = {**self.config.get_base_metadata()}
+        # session_id/user_id はメタデータから削除（ネイティブで設定）
+        merged_metadata.pop("session_id", None)
+        merged_metadata.pop("user_id", None)
+        if metadata:
+            merged_metadata.update(metadata)
+
+        # タグをマージ
+        merged_tags = self.config.get_base_tags()
+        if tags:
+            merged_tags.extend(tags)
+
+        # start_as_current_span でルートトレースを作成
+        with _langfuse.start_as_current_span(
+            name=name,
+            input=input,
+            metadata=merged_metadata,
+        ) as span:
+            # トレースレベルで session_id / user_id / tags を設定
+            span.update_trace(
+                session_id=self.config.session_id,
+                user_id=self.config.user_id,
+                tags=merged_tags,
+            )
+
+            # auto_end=True: コンテキストマネージャーが自動でend()を呼ぶ
+            wrapper = SpanWrapper(span, self, auto_end=True)
+
+            try:
+                yield wrapper
+            except Exception as e:
+                # スタックトレースを含めてエラーを記録
+                wrapper.set_error_with_traceback(e)
+                raise
+            # finally で end() を呼ばない（コンテキストマネージャーが処理）
+
+        # コンテキストマネージャー終了後にフラッシュ
+        self.flush()
+
+    @contextmanager
     def trace_span(
         self,
         name: str,
@@ -218,46 +285,59 @@ class LangfuseTracer:
         metadata: Optional[dict] = None,
         tags: Optional[list[str]] = None,
     ):
-        """スパンをトレース（コンテキストマネージャー）.
+        """汎用スパンをトレース（コンテキストマネージャー）.
 
+        Langfuse の start_as_current_span を使用してルートトレースを作成。
+        session_id / user_id はネイティブに設定。
         try/finally でスパンの確実終了を保証。
 
         Args:
             name: スパン名
             input: 入力データ
             metadata: 追加メタデータ
-            tags: 追加タグ（metadata内のtagsフィールドに格納）
+            tags: 追加タグ（Langfuse ネイティブタグとして設定）
 
         Yields:
             SpanWrapper: スパンラッパー
         """
-        # メタデータとタグをマージ
+        # メタデータをマージ（session_id/user_idはトレースレベルで設定するため除外）
         merged_metadata = {**self.config.get_base_metadata()}
+        merged_metadata.pop("session_id", None)
+        merged_metadata.pop("user_id", None)
         if metadata:
             merged_metadata.update(metadata)
 
-        # タグはメタデータ内に格納（Langfuse 3.10.5はstart_spanでtagsをサポートしない）
+        # タグをマージ
         merged_tags = self.config.get_base_tags()
         if tags:
             merged_tags.extend(tags)
-        merged_metadata["tags"] = merged_tags
 
-        span = _langfuse.start_span(
+        # start_as_current_span でルートトレースを作成
+        with _langfuse.start_as_current_span(
             name=name,
             input=input,
             metadata=merged_metadata,
-        )
+        ) as span:
+            # トレースレベルで session_id / user_id / tags を設定
+            span.update_trace(
+                session_id=self.config.session_id,
+                user_id=self.config.user_id,
+                tags=merged_tags,
+            )
 
-        wrapper = SpanWrapper(span, self)
+            # auto_end=True: コンテキストマネージャーが自動でend()を呼ぶ
+            wrapper = SpanWrapper(span, self, auto_end=True)
 
-        try:
-            yield wrapper
-        except Exception as e:
-            wrapper.set_error(str(e))
-            raise
-        finally:
-            wrapper.end()
-            self.flush()
+            try:
+                yield wrapper
+            except Exception as e:
+                # スタックトレースを含めてエラーを記録
+                wrapper.set_error_with_traceback(e)
+                raise
+            # finally で end() を呼ばない（コンテキストマネージャーが処理）
+
+        # コンテキストマネージャー終了後にフラッシュ
+        self.flush()
 
     @contextmanager
     def trace_tool(
@@ -269,6 +349,8 @@ class LangfuseTracer:
     ):
         """ツール呼び出しをトレース（コンテキストマネージャー）.
 
+        Langfuse の "tool" タイプを使用。
+
         Args:
             parent: 親スパンラッパー
             tool_name: ツール名
@@ -278,8 +360,10 @@ class LangfuseTracer:
         Yields:
             SpanWrapper: ツールスパンラッパー
         """
-        tool_span = parent._span.start_span(
+        # start_observation で as_type="tool" を指定
+        tool_span = parent._span.start_observation(
             name=f"tool:{tool_name}",
+            as_type="tool",
             input=input,
             metadata={
                 "tool_name": tool_name,
@@ -307,6 +391,7 @@ class LangfuseTracer:
     ) -> "SpanWrapper":
         """ツールスパンを開始（非同期処理用）.
 
+        Langfuse の "tool" タイプを使用。
         コンテキストマネージャーが使えない場合に使用。
         必ず end_tool_span() または set_error() + end() を呼ぶこと。
 
@@ -320,8 +405,10 @@ class LangfuseTracer:
         Returns:
             SpanWrapper: ツールスパンラッパー
         """
-        tool_span = parent._span.start_span(
+        # start_observation で as_type="tool" を指定
+        tool_span = parent._span.start_observation(
             name=f"tool:{tool_name}",
+            as_type="tool",
             input=input,
             metadata={
                 "tool_name": tool_name,
@@ -385,6 +472,8 @@ class LangfuseTracer:
     ):
         """LLM Generation を作成・終了.
 
+        Langfuse の "generation" タイプを使用。
+
         Args:
             parent: 親スパンラッパー
             name: Generation名
@@ -394,8 +483,10 @@ class LangfuseTracer:
             metrics: メトリクス
             tool_call_count: ツール呼び出し数
         """
-        generation = parent._span.start_generation(
+        # start_observation で as_type="generation" を指定
+        generation = parent._span.start_observation(
             name=name,
+            as_type="generation",
             model=model or self.config.model,
             input=input,
             output=output,
@@ -407,7 +498,7 @@ class LangfuseTracer:
 
         if metrics:
             generation.update(
-                usage=metrics.to_langfuse_usage(),
+                usage_details=metrics.to_langfuse_usage(),
                 metadata={
                     **metrics.to_langfuse_metadata(),
                     "response_length": len(str(output)) if output else 0,
@@ -445,6 +536,7 @@ class SpanWrapper:
         span: Any,
         tracer: LangfuseTracer,
         is_tool: bool = False,
+        auto_end: bool = False,
     ):
         """初期化.
 
@@ -452,10 +544,12 @@ class SpanWrapper:
             span: Langfuse スパン
             tracer: トレーサー
             is_tool: ツールスパンかどうか
+            auto_end: コンテキストマネージャーが自動でend()を呼ぶ場合True
         """
         self._span = span
         self._tracer = tracer
         self._is_tool = is_tool
+        self._auto_end = auto_end
         self._ended = False
         self._level = "DEFAULT"
         self._status_message: Optional[str] = None
@@ -477,6 +571,27 @@ class SpanWrapper:
         self._level = "ERROR"
         self._status_message = message
         self._span.update(level="ERROR", status_message=message)
+
+    def set_error_with_traceback(self, exception: Exception):
+        """エラーをスタックトレース付きで設定.
+
+        Args:
+            exception: 例外オブジェクト
+        """
+        self._level = "ERROR"
+        error_message = str(exception)
+        stack_trace = tb.format_exc()
+
+        self._status_message = error_message
+        self._span.update(
+            level="ERROR",
+            status_message=error_message,
+            metadata={
+                "error_type": type(exception).__name__,
+                "error_message": error_message,
+                "stack_trace": stack_trace,
+            },
+        )
 
     def set_warning(self, message: str):
         """警告を設定.
@@ -530,7 +645,13 @@ class SpanWrapper:
         return SpanWrapper(child_span, self._tracer)
 
     def end(self):
-        """スパンを終了."""
+        """スパンを終了.
+
+        auto_end=True の場合、コンテキストマネージャーが終了処理を行うため何もしない。
+        """
+        if self._auto_end:
+            # コンテキストマネージャーが自動でend()を呼ぶので何もしない
+            return
         if not self._ended:
             self._span.end()
             self._ended = True

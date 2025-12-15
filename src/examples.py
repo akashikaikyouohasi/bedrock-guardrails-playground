@@ -1,11 +1,18 @@
 """Example usage of Claude Agent SDK with Bedrock and Langfuse integration."""
 
+import uuid
 import anyio
 from agent import BedrockAgentSDK, BedrockAgentSDKWithClient, simple_query
 from langfuse import get_client
 
 # Initialize Langfuse client
 langfuse = get_client()
+
+# デモ用の session_id と user_id
+# 実際のアプリでは、session_id はセッション開始時に1回だけ生成し、
+# user_id はログインユーザーIDなどを使用する
+DEMO_SESSION_ID = f"demo-{uuid.uuid4().hex[:8]}"
+DEMO_USER_ID = "demo-user"
 
 
 # async def example_simple_query():
@@ -60,10 +67,16 @@ async def example_with_client():
 
     print(f"User: {prompt}\n")
     print(f"Allowed Tools: {tools}\n")
+    print(f"Session ID: {DEMO_SESSION_ID}\n")
+    print(f"User ID: {DEMO_USER_ID}\n")
     print("Assistant:\n")
 
     async with BedrockAgentSDKWithClient(tools=tools) as agent_client:
-        async for chunk in agent_client.chat_with_client(prompt):
+        async for chunk in agent_client.chat_with_client(
+            prompt,
+            session_id=DEMO_SESSION_ID,
+            user_id=DEMO_USER_ID,
+        ):
             print(chunk)
             print("---")
 

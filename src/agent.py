@@ -14,7 +14,6 @@ from claude_agent_sdk.types import (
     ResultMessage,
     AssistantMessage,
     ToolUseBlock,
-    ToolResultBlock,
 )
 
 try:
@@ -29,7 +28,7 @@ try:
     )
 except ImportError:
     # When running from src directory
-    from langfuse_tracer import (
+    from langfuse_tracer import (  # type: ignore
         LangfuseTracer,
         TracingConfig,
         AgentMetrics,
@@ -366,7 +365,7 @@ class BedrockAgentSDKWithClient:
 
         tracer = self._create_tracer(session_id, user_id)
 
-        with tracer.trace_span(
+        with tracer.trace_agent(
             name="chat_with_client",
             input=prompt,
             metadata={
@@ -383,15 +382,36 @@ class BedrockAgentSDKWithClient:
                 # Send query to Claude
                 await self.client.query(prompt)
 
+                # 現在のツールを追跡（ToolResultBlockは受信ストリームに含まれないため）
+                current_tool_ids: list[str] = []
+
                 # Receive response messages
                 async for message in self.client.receive_response():
                     # ResultMessage からメトリクスを抽出
                     if isinstance(message, ResultMessage):
                         metrics = extract_metrics_from_result(message)
+                        # 最終メッセージ時に未終了のツールを正常終了
+                        for tool_id in current_tool_ids:
+                            tracer.end_tool_span(
+                                tool_use_id=tool_id,
+                                output="(tool executed by SDK)",
+                                is_error=False,
+                            )
+                        current_tool_ids.clear()
                         continue
 
                     # AssistantMessage からツール使用を検出
                     if isinstance(message, AssistantMessage):
+                        # 新しいAssistantMessage到着時、前のツールを終了
+                        # （SDKが内部でツールを実行し、次のメッセージが来たということは実行完了）
+                        for tool_id in current_tool_ids:
+                            tracer.end_tool_span(
+                                tool_use_id=tool_id,
+                                output="(tool executed by SDK)",
+                                is_error=False,
+                            )
+                        current_tool_ids.clear()
+
                         for block in message.content:
                             # ツール使用の検出
                             if isinstance(block, ToolUseBlock):
@@ -403,14 +423,7 @@ class BedrockAgentSDKWithClient:
                                     tool_call_number=tool_call_count,
                                     input=block.input,
                                 )
-
-                            # ツール結果の検出
-                            elif isinstance(block, ToolResultBlock):
-                                tracer.end_tool_span(
-                                    tool_use_id=block.tool_use_id,
-                                    output=block.content if block.content else "(empty)",
-                                    is_error=block.is_error,
-                                )
+                                current_tool_ids.append(block.id)
 
                     # テキスト抽出
                     message_text = extract_message_text(message)
@@ -418,7 +431,16 @@ class BedrockAgentSDKWithClient:
                         full_response += message_text
                         yield message_text
 
-                # 未終了のツール span を終了
+                # 残った未終了のツール span を終了（正常終了として）
+                for tool_id in current_tool_ids:
+                    tracer.end_tool_span(
+                        tool_use_id=tool_id,
+                        output="(tool executed by SDK)",
+                        is_error=False,
+                    )
+                current_tool_ids.clear()
+
+                # 万が一の未終了スパンを終了
                 tracer.end_all_pending_spans("no result received")
 
                 # Generation を作成
@@ -442,7 +464,8 @@ class BedrockAgentSDKWithClient:
             except Exception as e:
                 # エラー時は未終了スパンをクリーンアップ
                 tracer.end_all_pending_spans(f"error: {str(e)}")
-                span.set_error(str(e))
+                # スタックトレースを含めてエラーを記録
+                span.set_error_with_traceback(e)
                 raise
 
 
